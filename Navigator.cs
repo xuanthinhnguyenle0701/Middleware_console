@@ -7,9 +7,17 @@ namespace Middleware_console
     public enum AppState
     {
         MainMenu,
+        
+        //AI MODULE STATES
         AI_Menu,
         AI_InputLogic,
         AI_Processing,
+
+        //TIA MODULE STATES
+        TIA_Menu,
+        TIA_Create,
+        TIA_Connect,
+        
         Exit
     }
 
