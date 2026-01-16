@@ -1,0 +1,253 @@
+--- STRICT SCL INSTRUCTION SYNTAX & INSTANTIATION RULES ---
+You MUST follow these patterns exactly when using system functions.
+DO NOT use C++ or generic programming syntax. Use Siemens SCL specific syntax below:
+
+[1. BLOCK INSTANTIATION STRATEGY]
+The User Tag List ONLY contains basic I/O signals (Bool, Int, Real, etc). It DOES NOT contain Block Instances.
+You must GENERATE instances internally based on the logic requirements using the following 3 types:
+
+TYPE A: MULTI-INSTANCE (*** DEFAULT FOR INTERNAL LOGIC ***)
+- Definition: The instance data is stored inside the current FB's memory.
+- When to use: ALWAYS use this for Timers (TON, TOF), Triggers (R_TRIG, F_TRIG), or Counters needed for the logic.
+- DECLARATION: Must be in 'VAR' (Static).
+- Naming Convention: Prefix 'stat_' (e.g., stat_Timer, stat_EdgeFlag).
+- Syntax:
+    VAR
+       stat_MyTimer : TON;      // Declare instance
+       stat_MyTrigger : R_TRIG; // Declare instance
+    END_VAR
+    BEGIN
+       // Call instance with hash (#)
+       #stat_MyTimer(IN := #i_Start, PT := T#5s);
+       #stat_MyTrigger(CLK := #i_Sensor);
+    END_VAR
+
+TYPE B: PARAMETER-INSTANCE (ADVANCED)
+- Definition: The instance is passed into this FB from outside via IN_OUT.
+- When to use: ONLY if the user explicitly asks to "pass a timer as parameter" or "share an instance".
+- DECLARATION: Must be in 'VAR_IN_OUT'.
+- Naming Convention: Prefix 'iq_' (e.g., iq_SharedTimer).
+- Syntax:
+    VAR_IN_OUT
+       iq_SharedTimer : TON; // Defined as a Type, not an Instance
+    END_VAR
+    BEGIN
+       #iq_SharedTimer(IN := #i_Start, PT := T#10s);
+    END_VAR
+
+TYPE C: SINGLE-INSTANCE (GLOBAL DB)
+- Definition: The instance has its own dedicated Data Block.
+- When to use: AVOID using this inside an FB unless explicitly requested (e.g., "Call DB10").
+- Syntax:
+    "Name_Of_Global_DB"(IN := #Condition);
+
+[2. SYSTEM FUNCTION SYNTAX CHEAT SHEET]
+Follow these patterns strictly. Ensure Instance Names follow the Multi-Instance rule (Prefix 'stat_' and use '#').
+
+// [A] PROGRAM CONTROL STRUCTURES
+// IF statements
+IF _condition_ THEN
+    // Statement section IF
+    ;
+END_IF;
+
+IF _condition_ THEN
+    // Statement section IF
+    ;
+ELSE
+    // Statement section ELSE
+    ;
+END_IF;
+
+IF _condition_ THEN
+    // Statement section IF
+    ;
+ELSIF _condition_ THEN
+    // Statement section ELSIF
+    ;
+ELSE
+    // Statement section ELSE
+    ;
+END_IF;
+
+// CASE statement
+CASE _variable_name_ OF
+    1:  // Statement section case 1
+        ;
+    2..4:  // Statement section case 2 to 4
+        ;
+    ELSE  // Statement section ELSE
+        ;
+END_CASE;
+
+// FOR loops
+FOR _counter_ := _start_count_ TO _end_count_ DO
+    // Statement section FOR
+    ;
+END_FOR;
+
+FOR _counter_ := _start_count_ TO _end_count_ BY _count_step_ DO
+    // Statement section FOR
+    ;
+END_FOR;
+
+// WHILE & REPEAT loops
+WHILE _condition_ DO
+    // Statement section WHILE
+    ;
+END_WHILE;
+
+REPEAT
+    // Statement section REPEAT
+    ;
+UNTIL _condition_ END_REPEAT;
+
+// Flow control
+CONTINUE;
+EXIT;
+GOTO _label_;
+RETURN;
+
+// REGION syntax (do not use comment for this syntax line)
+REGION _name_
+    // Statement section REGION
+END_REGION
+
+// [B] BIT LOGIC OPERATIONS
+#stat_R_TRIG_Instance(CLK:=_bool_in_,
+                      Q=>_bool_out_);
+
+#stat_F_TRIG_Instance(CLK:=_bool_in_,
+                      Q=>_bool_out_);
+
+// [C] TIMER OPERATIONS (Always include data in PT:= T#... format)
+// TP, TON, TOF
+#stat_Timer_Instance(IN:=_bool_in_,
+                     PT:=_time_in_,
+                     Q=>_bool_out_,
+                     ET=>_time_out_);
+
+// TONR (Retentive On-Delay)
+#stat_TONR_Instance(IN:=_bool_in_,
+                    R:=_bool_in_,
+                    PT:=_time_in_,
+                    Q=>_bool_out_,
+                    ET=>_time_out_);
+
+// Timer Utilities
+RESET_TIMER(_iec_timer_in_);
+PRESET_TIMER(PT:=_time_in_,
+             TIMER:=_iec_timer_in_);
+
+// [D] COUNTER OPERATIONS
+// CTU (Count Up)
+#stat_CTU_Instance(CU:=_bool_in_,
+                   R:=_bool_in_,
+                   PV:=_int_in_,
+                   Q=>_bool_out_,
+                   CV=>_int_out_);
+
+// CTD (Count Down)
+#stat_CTD_Instance(CD:=_bool_in_,
+                   LD:=_bool_in_,
+                   PV:=_int_in_,
+                   Q=>_bool_out_,
+                   CV=>_int_out_);
+
+// CTUD (Count Up Down)
+#stat_CTUD_Instance(CU:=_bool_in_,
+                    CD:=_bool_in_,
+                    R:=_bool_in_,
+                    LD:=_bool_in_,
+                    PV:=_int_in_,
+                    QU=>_bool_out_,
+                    QD=>_bool_out_,
+                    CV=>_int_out_);
+
+// [E] MATH FUNCTIONS
+ABS(_real_in_)
+MIN(IN1:=_sint_in_, IN2:=_sint_in_)
+MAX(IN1:=_sint_in_, IN2:=_sint_in_)
+LIMIT(MN:=_sint_in_, IN:=_sint_in_, MX:=_sint_in_)
+SQR(_real_in_)
+SQRT(_real_in_)
+LN(_real_in_)
+EXP(_real_in_)
+SIN(_real_in_)
+COS(_real_in_)
+TAN(_real_in_)
+ASIN(_real_in_)
+ACOS(_real_in_)
+ATAN(_real_in_)
+FRAC(_real_in_)
+
+// [F] CONVERSION & SCALING OPERATIONS
+// Explicit Conversion
+BOOL_TO_INT(_bool_in_)
+INT_TO_REAL(_int_in_)
+REAL_TO_INT(_real_in_)
+
+// Rounding
+CEIL(_real_in_)
+ROUND(_real_in_)
+FLOOR(_real_in_)
+TRUNC(_real_in_)
+
+// Analog Scaling
+NORM_X(MIN:=_int_in_, VALUE:=_int_in_, MAX:=_int_in_)
+SCALE_X(MIN:=_int_in_, VALUE:=_real_in_, MAX:=_int_in_)
+
+// [G] COMPARATOR & VARIANT OPERATIONS
+TypeOf(_variant_in_)
+TypeOfElements(_variant_in_)
+IS_ARRAY(_variant_in_)
+TypeOfDB(_db_any_in_)
+
+// [H] MOVE & SERIALIZATION OPERATIONS
+Deserialize(SRC_ARRAY:=_variant_in_, DEST_VARIABLE=>_variant_out_, POS:=_dint_inout_)
+Serialize(SRC_VARIABLE:=_variant_in_, DEST_ARRAY=>_variant_out_, POS:=_dint_inout_)
+SWAP(_dword_in_)
+
+// Block Moves
+MOVE_BLK(IN:=_byte_in_,
+         COUNT:=_uint_in_,
+         OUT=>_byte_out_);
+
+MOVE_BLK_VARIANT(SRC:=_variant_in_, COUNT:=_udint_in_, SRC_INDEX:=_dint_in_, DEST_INDEX:=_dint_in_, DEST=>_variant_out_)
+
+UMOVE_BLK(IN:=_byte_in_,
+          COUNT:=_uint_in_,
+          OUT=>_byte_out_);
+
+FILL_BLK(IN:=_byte_in_,
+         COUNT:=_uint_in_,
+         OUT=>_byte_out_);
+
+UFILL_BLK(IN:=_byte_in_,
+          COUNT:=_uint_in_,
+          OUT=>_byte_out_);
+
+// [I] WORD LOGIC OPERATIONS
+DECO(_uint_in_)
+ENCO(_byte_in_)
+SEL(G:=_bool_in_, IN0:=_wchar_in_, IN1:=_wchar_in_)
+MUX(K:=_sint_in_, IN0:=_sint_in_, IN1:=_sint_in_)
+DEMUX(K:=_uint_in_,
+      IN:=_sint_in_,
+      OUT0=>_sint_out_,
+      OUT1=>_sint_out_);
+
+// [J] SHIFT AND ROTATE
+SHR(IN:=_dword_in_, N:=_usint_in_)
+SHL(IN:=_dword_in_, N:=_usint_in_)
+ROR(IN:=_dword_in_, N:=_usint_in_)
+ROL(IN:=_dword_in_, N:=_usint_in_)
+
+// [K] RUNTIME & SYSTEM CONTROL
+ENDIS_PW(REQ:=_bool_in_, F_PWD:=_bool_in_, FULL_PWD:=_bool_in_, R_PWD:=_bool_in_, HMI_PWD:=_bool_in_, F_PWD_ON=>_bool_out_, FULL_PWD_ON=>_bool_out_, R_PWD_ON=>_bool_out_, HMI_PWD_ON=>_bool_out_)
+GET_ERROR(_errorstruct_out_);
+STP();
+GET_ERR_ID()
+INIT_RD(_bool_in_)
+WAIT(_int_in_);
+RUNTIME(_lreal_inout_)
