@@ -18,11 +18,6 @@ namespace Middleware_console
         // Nhóm TIA Automation (Mới thêm)
         TIA_Menu,
         TIA_Processing,
-
-        //TIA MODULE STATES
-        TIA_Menu,
-        TIA_Create,
-        TIA_Connect,
         
         Exit
     }
@@ -71,16 +66,21 @@ namespace Middleware_console
                     case AppState.AI_Menu:
                         ConsoleUI.PrintHeader("MODULE: AI GENERATOR");
                         string aiChoice = ConsoleUI.SelectOption("Generate type:", new[] {
-                            "SCL - Function Block",
-                            "SCADA Layout (JSON)",
+                           "SCL - Function Block (.scl)",
+                            "STL - Statement List (.awl)",
+                            "FBD - Function Block Diagram (.txt)",
+                            "LAD - Ladder (.txt)",
+                            "SCADA Layout (WinCC Unified JSON)",
                             "Back to Main Menu"
                         });
 
                         if (aiChoice.Contains("Back")) currentState = AppState.MainMenu;
-                        if (aiChoice.Contains("Back")) currentState = AppState.MainMenu;
                         else
                         {
                             if (aiChoice.Contains("SCL")) _currentMode = "SCL";
+                            else if (aiChoice.Contains("STL")) _currentMode = "STL";
+                            else if (aiChoice.Contains("FBD")) _currentMode = "FBD";
+                            else if (aiChoice.Contains("LAD")) _currentMode = "LAD";
                             else if (aiChoice.Contains("SCADA")) _currentMode = "SCADA";
 
                             currentState = AppState.AI_InputLogic;
@@ -91,11 +91,19 @@ namespace Middleware_console
                     case AppState.AI_InputLogic:
                         ConsoleUI.PrintHeader($"INPUT LOGIC FOR: {_currentMode}");
                         string userPrompt = ConsoleUI.GetMultiLineInput("Enter requirements");
-                        
-                        ConsoleUI.PrintStep("Processing AI request...");
-                        currentState = AppState.AI_Processing;
-                        await ProcessAI(userPrompt, _currentMode);
-                        currentState = AppState.AI_Menu;
+                        ConsoleUI.PrintStep("Ready to send request to Gemini...");
+                        Console.WriteLine("Press [ENTER] to confirm, [ESC] to cancel.");
+                        if (Console.ReadKey().Key == ConsoleKey.Escape)
+                            currentState = AppState.AI_Menu;
+                        else
+                        {
+                            currentState = AppState.AI_Processing;
+                            
+                            // GỌI HÀM XỬ LÝ ĐÃ CHUYỂN VÀO GEMINICORE
+                            await _aiCore.ProcessAI(userPrompt, _currentMode);
+                            
+                            currentState = AppState.AI_Menu;
+                        }
                         break;
 
                     // --- 3. MENU TIA PORTAL (Logic thay thế WinForm) ---
