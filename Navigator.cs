@@ -1,76 +1,100 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Middleware_console
 {
+    // --- CLASS HỖ TRỢ ĐỌC CATALOG PLC TỪ JSON ---
+    public class PlcCatalogItem
+    {
+        public string Name { get; set; }
+        public string OrderNumber { get; set; }
+        public string Version { get; set; }
+
+        public string GetTypeIdentifier()
+        {
+            // Format chuẩn của TIA Portal Openness
+            return $"OrderNumber:{OrderNumber}/{Version}";
+        }
+    }
+
+    // --- ENUM TRẠNG THÁI ỨNG DỤNG ---
     public enum AppState
     {
         MainMenu,
-                
-        //AI MODULE STATES
+
+        // Nhóm AI
         AI_Menu,
         AI_InputLogic,
         AI_Processing,
 
-        // Nhóm TIA Automation (Mới thêm)
-        TIA_Menu,
-        TIA_Processing,
-        
+        // Nhóm TIA Automation
+        TIA_Menu,        // Menu quản lý (Connect/Open/Create Project)
+        TIA_Processing,  // Menu thao tác (Create Dev/Compile/Download)
+
         Exit
     }
 
     internal class Navigator
     {
-        // Khởi tạo 2 Engine: 1 cho AI, 1 cho TIA
+        // Khởi tạo các Engine
         private static GeminiCore _aiCore = new GeminiCore();
-        private static TIA_V20 _tiaEngine = new TIA_V20(); // Class copy từ bài cũ sang
+        private static TIA_V20 _tiaEngine = new TIA_V20();
 
+        // Biến lưu trạng thái hiển thị (Status Labeling)
+        private static string _currentProjectName = "None";
+        private static string _currentDeviceName = "None";
+        private static string _currentDeviceType = "None";
+        private static string _currentIp = "0.0.0.0";
+
+        // Biến hỗ trợ AI
         private static string _lastGeneratedFilePath = "";
         private static string _currentMode = "";
 
-        // Bỏ [STAThread] vì không dùng Form nữa
         static async Task Main(string[] args)
         {
-            // BẮT BUỘC: Cấu hình TLS 1.2 cho .NET Framework 4.8 để gọi được Google API
+            // Cấu hình bắt buộc cho TIA Openness và Web Request
             System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
-            Console.OutputEncoding = System.Text.Encoding.UTF8; // Để in tiếng Việt có dấu nếu cần
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             AppState currentState = AppState.MainMenu;
 
             while (currentState != AppState.Exit)
             {
                 // Chỉ xóa màn hình khi không phải đang xử lý (để giữ log chạy)
-                if (currentState != AppState.AI_Processing && currentState != AppState.TIA_Processing)
+                if (currentState != AppState.AI_Processing)
                     Console.Clear();
 
                 switch (currentState)
                 {
-                    // --- MENU CHÍNH ---
+                    // =========================================================
+                    // 1. MAIN MENU
+                    // =========================================================
                     case AppState.MainMenu:
                         ConsoleUI.PrintHeader("GEMINI AI MIDDLEWARE");
-                        string choice = ConsoleUI.SelectOption("Select Module:", new[] {
+                        string mainChoice = ConsoleUI.SelectOption("Select Module:", new[] {
                             "1. AI Code Generator",
                             "2. TIA Portal Automation",
                             "3. Exit"
                         });
 
-                        if (choice.Contains("1")) currentState = AppState.AI_Menu;
-                        else if (choice.Contains("2")) currentState = AppState.TIA_Menu;
+                        if (mainChoice.Contains("1")) currentState = AppState.AI_Menu;
+                        else if (mainChoice.Contains("2")) currentState = AppState.TIA_Menu;
                         else currentState = AppState.Exit;
                         break;
 
-                    // --- TRẠNG THÁI 2: MENU AI ---
+                    // =========================================================
+                    // 2. AI MENU (GIỮ NGUYÊN)
+                    // =========================================================
                     case AppState.AI_Menu:
                         ConsoleUI.PrintHeader("MODULE: AI GENERATOR");
                         string aiChoice = ConsoleUI.SelectOption("Generate type:", new[] {
-                           "SCL - Function Block (.scl)",
-                            "STL - Statement List (.awl)",
-                            "FBD - Function Block Diagram (.txt)",
-                            "LAD - Ladder (.txt)",
-                            "SCADA Layout (WinCC Unified JSON)",
+                            "SCL - Function Block",
+                            "SCADA Layout (JSON)",
                             "Back to Main Menu"
                         });
 
@@ -78,69 +102,180 @@ namespace Middleware_console
                         else
                         {
                             if (aiChoice.Contains("SCL")) _currentMode = "SCL";
-                            else if (aiChoice.Contains("STL")) _currentMode = "STL";
-                            else if (aiChoice.Contains("FBD")) _currentMode = "FBD";
-                            else if (aiChoice.Contains("LAD")) _currentMode = "LAD";
                             else if (aiChoice.Contains("SCADA")) _currentMode = "SCADA";
-
                             currentState = AppState.AI_InputLogic;
                         }
                         break;
 
-                    // --- NHẬP INPUT ---
                     case AppState.AI_InputLogic:
-                        ConsoleUI.PrintHeader($"INPUT LOGIC FOR: {_currentMode}");
+                        ConsoleUI.PrintHeader($"INPUT FOR {_currentMode}");
                         string userPrompt = ConsoleUI.GetMultiLineInput("Enter requirements");
-                        ConsoleUI.PrintStep("Ready to send request to Gemini...");
-                        Console.WriteLine("Press [ENTER] to confirm, [ESC] to cancel.");
-                        if (Console.ReadKey().Key == ConsoleKey.Escape)
-                            currentState = AppState.AI_Menu;
-                        else
-                        {
-                            currentState = AppState.AI_Processing;
-                            
-                            // GỌI HÀM XỬ LÝ ĐÃ CHUYỂN VÀO GEMINICORE
-                            await _aiCore.ProcessAI(userPrompt, _currentMode);
-                            
-                            currentState = AppState.AI_Menu;
-                        }
+                        currentState = AppState.AI_Processing;
+                        await ProcessAI(userPrompt, _currentMode);
+                        currentState = AppState.AI_Menu;
                         break;
 
-                    // --- 3. MENU TIA PORTAL (Logic thay thế WinForm) ---
+                    // =========================================================
+                    // 3. TIA MENU (STATE 1: QUẢN LÝ DỰ ÁN)
+                    // =========================================================
                     case AppState.TIA_Menu:
-                        ConsoleUI.PrintHeader("MODULE: TIA PORTAL AUTOMATION");
-                        
-                        // Kiểm tra trạng thái kết nối để hiển thị menu phù hợp
-                        string status = _tiaEngine.IsConnected ? "[CONNECTED]" : "[DISCONNECTED]";
-                        Console.WriteLine($"Status: {status}\n");
-
-                        string tiaChoice = ConsoleUI.SelectOption("Action:", new[] {
-                            "1. Connect to TIA Portal",
-                            "2. Import SCL File to PLC", // Thay thế nút "Import"
-                            "3. Export PLC Tags",
-                            "4. Back to Main Menu"
+                        ConsoleUI.PrintHeader("TIA AUTOMATION - PROJECT MANAGER");
+                        string tiaMenuChoice = ConsoleUI.SelectOption("Select Action:", new[] {
+                            "1. Create new project",
+                            "2. Open TIA project",
+                            "3. Connect to TIA (Running)",
+                            "4. Close TIA",
+                            "5. Back to Main Menu"
                         });
 
-                        if (tiaChoice.Contains("Back"))
+                        if (tiaMenuChoice.Contains("Back"))
                         {
                             currentState = AppState.MainMenu;
                         }
-                        else if (tiaChoice.Contains("Connect"))
+                        else if (tiaMenuChoice.Contains("1. Create"))
                         {
-                            currentState = AppState.TIA_Processing;
-                            ConnectTiaLogic(); // Hàm xử lý kết nối
+                            Console.Write("Enter Folder Path (e.g D:\\TIA): ");
+                            string path = Console.ReadLine();
+                            Console.Write("Enter Project Name: ");
+                            string name = Console.ReadLine();
+                            
+                            ConsoleUI.PrintStep("Creating Project...");
+                            if (_tiaEngine.CreateTIAproject(path, name, true))
+                            {
+                                _currentProjectName = name;
+                                ConsoleUI.PrintSuccess("Project Created!");
+                                currentState = AppState.TIA_Processing;
+                            }
+                            else ConsoleUI.PrintError("Failed to create project.");
+                            Console.ReadKey();
+                        }
+                        else if (tiaMenuChoice.Contains("2. Open"))
+                        {
+                            Console.Write("Enter full path to .ap1x file: ");
+                            string path = Console.ReadLine().Replace("\"", ""); // Xóa ngoặc kép nếu user copy path
+                            
+                            ConsoleUI.PrintStep("Opening Project...");
+                            if (_tiaEngine.CreateTIAproject(path, "", false))
+                            {
+                                _currentProjectName = Path.GetFileNameWithoutExtension(path);
+                                ConsoleUI.PrintSuccess("Project Opened!");
+                                currentState = AppState.TIA_Processing;
+                            }
+                            else ConsoleUI.PrintError("Failed to open project.");
+                            Console.ReadKey();
+                        }
+                        else if (tiaMenuChoice.Contains("3. Connect"))
+                        {
+                            ConsoleUI.PrintStep("Connecting...");
+                            if (_tiaEngine.ConnectToTIA())
+                            {
+                                _currentProjectName = "Attached_Project";
+                                ConsoleUI.PrintSuccess("Connected!");
+                                currentState = AppState.TIA_Processing;
+                            }
+                            else ConsoleUI.PrintError("No running TIA Portal found.");
+                            Console.ReadKey();
+                        }
+                        else if (tiaMenuChoice.Contains("4. Close"))
+                        {
+                            _tiaEngine.CloseTIA();
+                            _currentProjectName = "None";
+                            ConsoleUI.PrintSuccess("TIA Closed.");
+                            Thread.Sleep(1000);
+                        }
+                        break;
+
+                    // =========================================================
+                    // 4. TIA PROCESSING (STATE 2: THAO TÁC TRONG DỰ ÁN)
+                    // =========================================================
+                    case AppState.TIA_Processing:
+                        // --- HEADER TRẠNG THÁI (STATUS LABELING) ---
+                        Console.Clear();
+                        string connStatus = _tiaEngine.IsConnected ? "CONNECTED" : "DISCONNECTED";
+                        
+                        // In Status Bar màu xanh Cyan
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine("=============================================================");
+                        Console.WriteLine($"[TIA: {connStatus}]   [PROJECT: {_currentProjectName}]");
+                        Console.WriteLine($"[DEVICE: {_currentDeviceName}]   [TYPE: {_currentDeviceType}]   [IP: {_currentIp}]");
+                        Console.WriteLine("=============================================================");
+                        Console.ResetColor();
+                        Console.WriteLine(); // Xuống dòng
+
+                        string procChoice = ConsoleUI.SelectOption("Project Operations:", new[] {
+                            "1. Create Device",
+                            "2. Choose Device",
+                            "3. Create FB (Import SCL)",
+                            "4. Create FC",
+                            "5. Create Faceplate",
+                            "6. Compile",
+                            "7. Download to device",
+                            "8. Save Project",
+                            "9. Back to TIA Menu"
+                        });
+
+                        if (procChoice.Contains("9. Back"))
+                        {
                             currentState = AppState.TIA_Menu;
                         }
-                        else if (tiaChoice.Contains("Import"))
+                        else if (procChoice.Contains("1. Create Device"))
                         {
-                            currentState = AppState.TIA_Processing;
-                            ImportSclLogic(); // Hàm xử lý import
-                            currentState = AppState.TIA_Menu;
+                            HandleCreateDevice();
                         }
-                         else if (tiaChoice.Contains("Export"))
+                        else if (procChoice.Contains("2. Choose Device"))
                         {
-                            // Bạn có thể tự thêm hàm ExportTagsLogic() tương tự
-                            ConsoleUI.PrintStep("Feature coming soon...");
+                            var devices = _tiaEngine.GetPlcList();
+                            if (devices.Count == 0) ConsoleUI.PrintError("No devices found in project.");
+                            else
+                            {
+                                string selected = ConsoleUI.SelectOption("Available Devices:", devices.ToArray());
+                                _currentDeviceName = selected;
+                                _currentDeviceType = "Unknown"; 
+                                ConsoleUI.PrintSuccess($"Selected: {selected}");
+                            }
+                        }
+                        else if (procChoice.Contains("3. Create FB"))
+                        {
+                            TiaImportLogic("FB");
+                        }
+                        else if (procChoice.Contains("4. Create FC"))
+                        {
+                            TiaImportLogic("FC");
+                        }
+                        else if (procChoice.Contains("5. Create Faceplate"))
+                        {
+                            ConsoleUI.PrintStep("Faceplate feature coming soon...");
+                            Thread.Sleep(1000);
+                        }
+                        else if (procChoice.Contains("6. Compile"))
+                        {
+                            string compileType = ConsoleUI.SelectOption("Compile Mode:", new[] { "Hardware", "Software", "Both" });
+                            bool hw = compileType == "Hardware" || compileType == "Both";
+                            bool sw = compileType == "Software" || compileType == "Both";
+
+                            ConsoleUI.PrintStep($"Compiling {_currentDeviceName}...");
+                            string result = _tiaEngine.CompileSpecific(_currentDeviceName, hw, sw);
+                            Console.WriteLine(result);
+                            Console.ReadKey();
+                        }
+                        else if (procChoice.Contains("7. Download"))
+                        {
+                            var adapters = TIA_V20.GetSystemNetworkAdapters();
+                            if (adapters.Count == 0) ConsoleUI.PrintError("No Network Interface found.");
+                            else
+                            {
+                                string netCard = ConsoleUI.SelectOption("Select PG/PC Interface:", adapters.ToArray());
+                                ConsoleUI.PrintStep($"Downloading to {_currentIp} via {netCard}...");
+                                
+                                string result = _tiaEngine.DownloadToPLC(_currentDeviceName, _currentIp, netCard);
+                                Console.WriteLine(result);
+                            }
+                            Console.ReadKey();
+                        }
+                        else if (procChoice.Contains("8. Save"))
+                        {
+                            if (_tiaEngine.SaveProject()) ConsoleUI.PrintSuccess("Project Saved.");
+                            else ConsoleUI.PrintError("Save failed.");
                             Thread.Sleep(1000);
                         }
                         break;
@@ -148,93 +283,139 @@ namespace Middleware_console
             }
         }
 
-        // --- CÁC HÀM XỬ LÝ LOGIC TIA ---
-
-        static void ConnectTiaLogic()
+        // --- LOGIC: CREATE DEVICE (JSON + MANUAL) ---
+        static void HandleCreateDevice()
         {
-            ConsoleUI.PrintStep("Connecting to Running TIA Portal Instance...");
-            try
+            string typeIdentifier = "";
+            string inputMode = ConsoleUI.SelectOption("Select Device Input Mode:", new[] {
+                "1. Load from Catalog (JSON)",
+                "2. Manual Input (Order Number)"
+            });
+
+            if (inputMode.Contains("1. Load"))
             {
-                // Gọi hàm Connect từ class TIA_V20 cũ của bạn
-                // Giả sử hàm Connect() trả về bool hoặc void
-                _tiaEngine.ConnectToTiaPortal(); 
+                try 
+                {
+                    string jsonPath = "PlcCatalog.json";
+                    if (File.Exists(jsonPath))
+                    {
+                        string jsonContent = File.ReadAllText(jsonPath);
+                        var catalog = JsonConvert.DeserializeObject<List<PlcCatalogItem>>(jsonContent);
+
+                        // --- SỬA LỖI Ở ĐÂY: LỌC BỎ DATA RÁC ---
+                        if (catalog != null && catalog.Count > 0)
+                        {
+                            // Chỉ lấy những dòng có Tên và Mã đầy đủ (Khắc phục lỗi Value cannot be null)
+                            var validItems = catalog.Where(x => !string.IsNullOrEmpty(x.Name) && !string.IsNullOrEmpty(x.OrderNumber)).ToList();
+
+                            if (validItems.Count > 0)
+                            {
+                                // Tạo menu từ danh sách đã lọc sạch
+                                var options = validItems.Select(x => $"{x.Name} ({x.OrderNumber})").ToArray();
+                                string selectedStr = ConsoleUI.SelectOption("Select PLC Model:", options);
+                                
+                                // Tìm kiếm an toàn bằng OrderNumber (chắc chắn không null)
+                                var selectedItem = validItems.FirstOrDefault(x => selectedStr.Contains(x.OrderNumber));
+                                
+                                if (selectedItem != null)
+                                {
+                                    typeIdentifier = selectedItem.GetTypeIdentifier();
+                                    ConsoleUI.PrintSuccess($"Selected: {selectedItem.Name} - {selectedItem.Version}");
+                                }
+                            }
+                            else ConsoleUI.PrintError("JSON loaded but all items are invalid (missing Name). Check JSON file.");
+                        }
+                        else ConsoleUI.PrintError("Catalog JSON is empty.");
+                    }
+                    else ConsoleUI.PrintError("PlcCatalog.json not found!");
+                }
+                catch (Exception ex) { ConsoleUI.PrintError($"JSON Error: {ex.Message}"); }
+            }
+            
+            // ... (Phần nhập tay phía dưới giữ nguyên) ...
+            if (string.IsNullOrEmpty(typeIdentifier))
+            {
+                Console.WriteLine("\n--- MANUAL INPUT ---");
+                Console.Write("Enter Order Number (e.g. 6ES7 511-1AK02-0AB0): ");
+                string orderNum = Console.ReadLine();
+                Console.Write("Enter Version (e.g. V4.4): ");
+                string ver = Console.ReadLine();
+                typeIdentifier = $"OrderNumber:{orderNum}/{ver}";
+            }
+
+            Console.Write("Set Device Name: ");
+            string devName = Console.ReadLine();
+            Console.Write("Set IP Address: ");
+            string ip = Console.ReadLine();
+
+            try 
+            {
+                ConsoleUI.PrintStep($"Creating device...");
+                _tiaEngine.CreateDev(devName, typeIdentifier, ip, "");
+                ConsoleUI.PrintSuccess($"Device {devName} created successfully.");
                 
-                // Nếu class cũ của bạn không ném lỗi mà trả về bool, hãy check bool
-                ConsoleUI.PrintSuccess("Connected to TIA Portal successfully!");
+                // Cập nhật Header
+                _currentDeviceName = devName;
+                _currentDeviceType = typeIdentifier; 
+                _currentIp = ip;
             }
-            catch (Exception ex)
-            {
-                ConsoleUI.PrintError($"Connection Failed: {ex.Message}");
-            }
-            Console.WriteLine("Press any key to continue...");
-            Console.ReadKey();
-        }
-
-        static void ImportSclLogic()
-        {
-            // 1. Hỏi đường dẫn file (Nếu vừa tạo xong thì gợi ý luôn)
-            string defaultPath = _lastGeneratedFilePath;
-            string filePath = "";
-
-            if (!string.IsNullOrEmpty(defaultPath) && File.Exists(defaultPath))
-            {
-                Console.WriteLine($"Found recently generated file: {Path.GetFileName(defaultPath)}");
-                string useLast = ConsoleUI.SelectOption("Use this file?", new[] { "Yes", "No, browse another" });
-                if (useLast == "Yes") filePath = defaultPath;
-            }
-
-            if (string.IsNullOrEmpty(filePath))
-            {
-                Console.Write("Enter full path to .scl file: ");
-                filePath = Console.ReadLine().Replace("\"", ""); // Xóa dấu ngoặc kép nếu user copy path
-            }
-
-            if (!File.Exists(filePath))
-            {
-                ConsoleUI.PrintError("File not found!");
-                Thread.Sleep(1500);
-                return;
-            }
-
-            // 2. Thực hiện Import (Gọi hàm từ TIA_V20.cs)
-            ConsoleUI.PrintStep($"Importing {Path.GetFileName(filePath)} to PLC...");
-            try
-            {
-                // Giả sử TIA_V20.cs của bạn có hàm ImportBlock(filePath)
-                // Bạn cần mở file TIA_V20.cs ra xem tên hàm chính xác là gì nhé
-                _tiaEngine.ImportBlock(filePath); 
-
-                ConsoleUI.PrintSuccess("Import Completed!");
-            }
-            catch (Exception ex)
-            {
-                ConsoleUI.PrintError($"Import Error: {ex.Message}");
-            }
+            catch (Exception ex) { ConsoleUI.PrintError($"Create Failed: {ex.Message}"); }
             
             Console.WriteLine("Press any key to return...");
             Console.ReadKey();
         }
 
-        // --- LOGIC AI (Giữ nguyên) ---
+        // --- LOGIC: IMPORT SCL ---
+        static void TiaImportLogic(string blockType)
+        {
+            Console.WriteLine($"--- CREATE {blockType} ---");
+            string path = "";
+            
+            if (!string.IsNullOrEmpty(_lastGeneratedFilePath))
+            {
+                string choice = ConsoleUI.SelectOption($"Use recently generated AI file ({Path.GetFileName(_lastGeneratedFilePath)})?", new[]{"Yes", "No"});
+                if (choice == "Yes") path = _lastGeneratedFilePath;
+            }
+
+            if (string.IsNullOrEmpty(path))
+            {
+                Console.Write("Enter path to .scl file: ");
+                path = Console.ReadLine().Replace("\"", "");
+            }
+
+            if (File.Exists(path))
+            {
+                try
+                {
+                    _tiaEngine.CreateFBblockFromSource(path);
+                    ConsoleUI.PrintSuccess($"Imported {blockType} successfully!");
+                }
+                catch (Exception ex) { ConsoleUI.PrintError(ex.Message); }
+            }
+            else ConsoleUI.PrintError("File not found.");
+            
+            Console.ReadKey();
+        }
+
+        // --- AI LOGIC (GIỮ NGUYÊN) ---
         static async Task ProcessAI(string userPrompt, string mode)
         {
-            // ... (Giữ nguyên nội dung hàm ProcessAI như trước) ...
-            // Demo nhanh để code chạy được:
             string category = "PLC Programming";
             string lang = "SCL";
-            if(mode == "SCADA") { category="SCADA"; lang="";}
+            string blockType = "FB";
+
+            if (mode == "SCADA") { category = "SCADA Designing"; lang = ""; }
             
-            var task = _aiCore.GenerateScriptFromGemini(_aiCore.BuildPlcPrompt(category, "Siemens", "S7-1500", "FB", lang, userPrompt, ""));
+            var task = _aiCore.GenerateScriptFromGemini(_aiCore.BuildPlcPrompt(category, "Siemens", "S7-1500", blockType, lang, userPrompt, ""));
             await ConsoleUI.ShowSpinner(task);
             string code = await task;
-            
-            if(!string.IsNullOrEmpty(code))
+
+            if (!string.IsNullOrEmpty(code))
             {
-                ConsoleUI.PrintSuccess("Done!");
+                ConsoleUI.PrintSuccess("Code Generated!");
                 _lastGeneratedFilePath = _aiCore.SaveScriptToFile(code, category, lang);
             }
-            else ConsoleUI.PrintError("Failed.");
-            
+            else ConsoleUI.PrintError("AI Failed.");
             Thread.Sleep(1000);
         }
     }
