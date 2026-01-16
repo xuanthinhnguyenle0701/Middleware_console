@@ -31,6 +31,28 @@ namespace Middleware_console
         private TiaPortal _tiaPortal;
         private Project _project;
         public TIA_V20() { }
+        // --- BỔ SUNG ĐỂ TƯƠNG THÍCH VỚI NAVIGATOR.CS ---
+
+        // 1. Thuộc tính kiểm tra trạng thái kết nối
+        public bool IsConnected => _tiaPortal != null && _project != null;
+
+        // 2. Hàm Alias (tên giả) để Navigator gọi Connect
+        public void ConnectToTiaPortal()
+        {
+            // Thử kết nối process đang chạy
+            if (!ConnectToTIA()) 
+            {
+                // Nếu không tìm thấy process nào, thử tạo mới (tùy chọn)
+                // Hoặc ném lỗi để Navigator bắt được
+                throw new Exception("No running TIA Portal instance found!");
+            }
+        }
+
+        // 3. Hàm Alias để Navigator gọi Import
+        public void ImportBlock(string filePath)
+        {
+            CreateFBblockFromSource(filePath);
+        }
         #endregion
 
         #region 2. Connection & Project Management
