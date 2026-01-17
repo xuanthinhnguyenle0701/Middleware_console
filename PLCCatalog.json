@@ -1,50 +1,12 @@
 [
   {
-    "Family": "S7-1200",
-    "Devices": [
-      {
-        "Name": "CPU 1214C DC/DC/DC",
-        "Variants": [
-          {
-            "OrderNumber": "6ES7 214-1AG40-0XB0",
-            "Versions": [ "V4.0", "V4.1", "V4.1", "V4.2", "V4.3", "V4.4", "V4.5", "V4.6", "V4.7" ]
-          },
-          {
-            "OrderNumber": "6ES7 214-1AG31-0XB0",
-            "Versions": [ "V3.0" ]
-          },
-          {
-            "OrderNumber": "6ES7 214-1AG30-0XB0",
-            "Versions": [ "V2.0", "V2.1", "V2.2" ]
-          }
-        ]
-      }
-    ]
+    "Name": "S7-1200 CPU 1214C DC/DC/DC",
+    "OrderNumber": "6ES7 214-1AG40-0XB0",
+    "Version": "V4.4"
   },
   {
-    "Family": "S7-1500",
-    "Devices": [
-      {
-        "Name": "CPU 1516-3 PN/DP",
-        "Variants": [
-          {
-            "OrderNumber": "6ES7 516-3AN00-0AB0",
-            "Versions": [ "V1.0", "V1.1", "V1.5", "V1.6", "V1.7", "V1.8"]
-          },
-          {
-            "OrderNumber": "6ES7 516-3AN01-0AB0",
-            "Versions": [ "V1.8", "V2.0", "V2.1", "V2.5", "V2.6", "V2.8", "V2.9" ]
-          },
-          {
-            "OrderNumber": "6ES7 516-3AN02-0AB0",
-            "Versions": [ "V2.8", "V2.9" ]
-          },
-          {
-            "OrderNumber": "6ES7 516-3AP03-0AB0",
-            "Versions": [ "V3.0", "V3.1", "V4.0" ]
-          }
-        ]
-      }
-    ]
+    "Name": "S7-1500 CPU 1511-1 PN",
+    "OrderNumber": "6ES7 511-1AK02-0AB0",
+    "Version": "V2.9"
   }
 ]

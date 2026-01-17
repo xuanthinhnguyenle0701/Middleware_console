@@ -1,6 +1,8 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,6 +10,21 @@ using System.Windows.Forms; // Vẫn giữ để dùng Application.StartupPath n
 
 namespace Middleware_console
 {
+    // --- CLASS HỖ TRỢ ĐỌC CATALOG PLC TỪ JSON ---
+    public class PlcCatalogItem
+    {
+        public string Name { get; set; }
+        public string OrderNumber { get; set; }
+        public string Version { get; set; }
+
+        public string GetTypeIdentifier()
+        {
+            // Format chuẩn của TIA Portal Openness
+            return $"OrderNumber:{OrderNumber}/{Version}";
+        }
+    }
+
+    // --- ENUM TRẠNG THÁI ỨNG DỤNG ---
     public enum AppState
     {
         MainMenu,
@@ -54,6 +71,7 @@ namespace Middleware_console
         {
             // Config TLS cho AI
             System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             AppState currentState = AppState.MainMenu;
