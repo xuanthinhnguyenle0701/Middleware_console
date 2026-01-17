@@ -215,27 +215,5 @@ namespace Middleware_console
             Console.ReadKey();
         }
 
-        // --- LOGIC AI (Giữ nguyên) ---
-        static async Task ProcessAI(string userPrompt, string mode)
-        {
-            // ... (Giữ nguyên nội dung hàm ProcessAI như trước) ...
-            // Demo nhanh để code chạy được:
-            string category = "PLC Programming";
-            string lang = "SCL";
-            if(mode == "SCADA") { category="SCADA"; lang="";}
-            
-            var task = _aiCore.GenerateScriptFromGemini(_aiCore.BuildPlcPrompt(category, "Siemens", "S7-1500", "FB", lang, userPrompt, ""));
-            await ConsoleUI.ShowSpinner(task);
-            string code = await task;
-            
-            if(!string.IsNullOrEmpty(code))
-            {
-                ConsoleUI.PrintSuccess("Done!");
-                _lastGeneratedFilePath = _aiCore.SaveScriptToFile(code, category, lang);
-            }
-            else ConsoleUI.PrintError("Failed.");
-            
-            Thread.Sleep(1000);
-        }
     }
 }
