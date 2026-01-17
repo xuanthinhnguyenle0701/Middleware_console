@@ -41,21 +41,59 @@ namespace Middleware_console
             Console.ResetColor();
         }
 
+        // --- HÀM HỖ TRỢ ĐỌC INPUT CÓ XỬ LÝ ESC ---
+        // Trả về null nếu ấn ESC, trả về chuỗi nếu ấn Enter
+        private static string ReadInputWithEsc()
+        {
+            StringBuilder buffer = new StringBuilder();
+            while (true)
+            {
+                ConsoleKeyInfo key = Console.ReadKey(intercept: true);
+
+                if (key.Key == ConsoleKey.Escape)
+                {
+                    return null; // Tín hiệu hủy
+                }
+                else if (key.Key == ConsoleKey.Enter)
+                {
+                    Console.WriteLine();
+                    return buffer.ToString().Trim();
+                }
+                else if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (buffer.Length > 0)
+                    {
+                        buffer.Length--;
+                        Console.Write("\b \b"); // Xóa ký tự trên màn hình
+                    }
+                }
+                else if (!char.IsControl(key.KeyChar))
+                {
+                    buffer.Append(key.KeyChar);
+                    Console.Write(key.KeyChar);
+                }
+            }
+        }
+
         // --- 2. MÔ PHỎNG COMBO BOX (Menu chọn số) ---
-        // Thay vì bấm mũi tên xổ xuống, user sẽ nhập số 1, 2, 3...
-        public static string SelectOption(string prompt, string[] options)
+        public static string SelectOption(string prompt, string[] options, bool allowEsc = false)
         {
             Console.WriteLine(prompt);
             for (int i = 0; i < options.Length; i++)
             {
-                // In ra: [1] Siemens, [2] Schneider...
                 Console.WriteLine($"   [{i + 1}] {options[i]}");
             }
 
             while (true)
             {
                 Console.Write("   Your choice (number): ");
-                string input = Console.ReadLine();
+                
+                // SỬA: Dùng hàm đọc phím thay vì ReadLine
+                string input = ReadInputWithEsc();
+
+                if (input == null && allowEsc) return null;
+
+                if (input == null && !allowEsc) continue;
 
                 if (int.TryParse(input, out int choice) && choice > 0 && choice <= options.Length)
                 {
@@ -71,12 +109,21 @@ namespace Middleware_console
         }
 
         // --- 3. MÔ PHỎNG TEXT BOX (Nhập liệu 1 dòng) ---
-        public static string GetInput(string prompt, bool allowEmpty = false)
+        public static string GetInput(string prompt, bool allowEmpty = false, bool allowEsc = false)
         {
             while (true)
             {
-                Console.Write($"{prompt} ");
-                string input = Console.ReadLine().Trim();
+                // Chỉ hiện nhắc nhở ESC nếu cho phép
+                string promptText = allowEsc ? $"{prompt} [ESC to Back] > " : $"{prompt} > ";
+                Console.Write(promptText);
+                
+                string input = ReadInputWithEsc();
+
+                // Nếu ESC được phép -> Trả về null
+                if (input == null && allowEsc) return null;
+                
+                // Nếu ESC không được phép -> Bỏ qua
+                if (input == null && !allowEsc) continue;
 
                 if (allowEmpty || !string.IsNullOrWhiteSpace(input))
                 {
@@ -89,17 +136,23 @@ namespace Middleware_console
         // --- 4. MÔ PHỎNG RICH TEXT BOX (Nhập logic nhiều dòng) ---
         public static string GetMultiLineInput(string prompt)
         {
-            Console.WriteLine($"{prompt} (Type 'END' on a new line to finish):");
-            Console.ForegroundColor = ConsoleColor.White; // Màu chữ trắng cho dễ nhìn
+            Console.WriteLine($"{prompt} (Type 'END' on a new line to finish, ESC to Cancel):");
+            Console.ForegroundColor = ConsoleColor.White;
 
             StringBuilder sb = new StringBuilder();
+            
+            // Lưu ý: Logic nhập nhiều dòng phức tạp hơn với ESC, 
+            // ở đây ta giữ đơn giản: Nếu dòng đầu tiên ấn ESC -> Hủy.
             while (true)
             {
                 Console.Write("   > ");
-                string line = Console.ReadLine();
+                // Ở đây vẫn dùng ReadLine cho đơn giản, nếu bạn muốn ESC thoát ngay thì cần viết lại logic KeyChar phức tạp hơn
+                // Tạm thời giữ nguyên hoặc dùng ReadInputWithEsc cho từng dòng
+                string line = ReadInputWithEsc(); 
 
-                // Điều kiện thoát nhập liệu
-                if (line?.Trim().ToUpper() == "END")
+                if (line == null) return null; // ESC
+
+                if (line.Trim().ToUpper() == "END")
                     break;
 
                 sb.AppendLine(line);
@@ -113,8 +166,7 @@ namespace Middleware_console
             return result;
         }
 
-        // --- 5. MÔ PHỎNG LOADING SPINNER (Hiệu ứng chờ) ---
-        // Hàm này sẽ chạy animation xoay xoay trong khi đợi Task xử lý xong
+        // --- 5. MÔ PHỎNG LOADING SPINNER ---
         public static async Task ShowSpinner(Task processingTask)
         {
             Console.CursorVisible = false;
@@ -124,17 +176,15 @@ namespace Middleware_console
             Console.Write("Processing... ");
             Console.ResetColor();
 
-            // Lặp cho đến khi Task bên kia chạy xong
             while (!processingTask.IsCompleted)
             {
                 Console.Write(spinner[counter % 4]);
-                // Lùi con trỏ lại 1 đơn vị để ghi đè ký tự cũ
                 Console.SetCursorPosition(Console.CursorLeft - 1, Console.CursorTop);
                 counter++;
                 await Task.Delay(100);
             }
 
-            Console.Write("Done!   "); // Xóa ký tự spinner cuối cùng
+            Console.Write("Done!   ");
             Console.WriteLine();
             Console.CursorVisible = true;
         }

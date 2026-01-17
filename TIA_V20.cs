@@ -31,19 +31,33 @@ namespace Middleware_console
         private TiaPortal _tiaPortal;
         private Project _project;
         public TIA_V20() { }
-        // --- BỔ SUNG ĐỂ TƯƠNG THÍCH VỚI NAVIGATOR.CS ---
 
-        // 1. Thuộc tính kiểm tra trạng thái kết nối
-        public bool IsConnected => _tiaPortal != null && _project != null;
+
+        // 1. Thuộc tính kiểm tra kết nối (dùng trong Navigator)
+        public bool IsConnected
+        {
+            get
+            {
+                if (_tiaPortal == null || _project == null) return false;
+                try
+                {
+                    var checkStatus = _project.Path;
+                    return true;
+                }
+                catch
+                {
+                    _tiaPortal = null;
+                    _project = null;
+                    return false;
+                }
+            }
+        }
 
         // 2. Hàm Alias (tên giả) để Navigator gọi Connect
         public void ConnectToTiaPortal()
         {
-            // Thử kết nối process đang chạy
-            if (!ConnectToTIA()) 
+            if (!ConnectToTIA())
             {
-                // Nếu không tìm thấy process nào, thử tạo mới (tùy chọn)
-                // Hoặc ném lỗi để Navigator bắt được
                 throw new Exception("No running TIA Portal instance found!");
             }
         }
@@ -52,6 +66,33 @@ namespace Middleware_console
         public void ImportBlock(string filePath)
         {
             CreateFBblockFromSource(filePath);
+        }
+
+        public string ProjectName
+        {
+            get
+            {
+                if (_project != null)
+                {
+                    try { return _project.Name; }
+                    catch { return "Unknown"; }
+                }
+                return "None";
+            }
+        }
+
+        // Thuộc tính lấy đường dẫn Project (nếu cần hiển thị thêm)
+        public string ProjectPath
+        {
+            get
+            {
+                if (_project != null)
+                {
+                    try { return _project.Path.FullName; }
+                    catch { return ""; }
+                }
+                return "";
+            }
         }
         #endregion
 
@@ -161,71 +202,270 @@ namespace Middleware_console
         }
         #endregion
 
-        #region 3. Hardware & Network (ĐÃ CHỈNH SỬA CHO JSON & FOLDER)
+        #region 3. Hardware & Network
 
-        // Hàm CreateDev chuẩn cho JSON (Nhận chuỗi TypeIdentifier)
         public void CreateDev(string devName, string typeIdentifier, string ipX1, string ipX2)
         {
             if (_project == null) CheckProject();
             if (string.IsNullOrWhiteSpace(devName)) devName = "Device_1";
 
-            // Kiểm tra trùng tên (Quét cả trong Group để check chính xác)
-            List<string> existingNames = GetPlcList();
-            if (existingNames.Contains(devName))
+            var currentDevices = GetDeviceList();
+            if (currentDevices.Any(d => d.Name == devName))
                 throw new Exception($"Name '{devName}' already exists!");
 
-            // Tạo Device từ chuỗi định danh (VD: OrderNumber:6ES7.../V4.4)
-            Device newDevice = _project.Devices.CreateWithItem(typeIdentifier, devName, devName);
+            Device newStation = _project.Devices.CreateWithItem(typeIdentifier, devName, devName);
+            DeviceItem targetItem = FindIntelligentItem(newStation);
+            
+            if (targetItem == null && newStation.DeviceItems.Count > 0) targetItem = newStation.DeviceItems[0];
 
-            // Gán IP ngay sau khi tạo
-            if (!string.IsNullOrEmpty(ipX1))
+            if (targetItem != null)
             {
-                SetPlcIpAddress(newDevice, ipX1);
+                try { targetItem.Name = devName; } catch { } 
+                if (!string.IsNullOrEmpty(ipX1)) SetPlcIpAddress(newStation, ipX1);
             }
         }
 
-        // Hàm lấy danh sách PLC (ĐỆ QUY - Hỗ trợ tìm trong Folder/Group)
-        public List<string> GetPlcList()
+        // --- HÀM LẤY DANH SÁCH THIẾT BỊ (FINAL V6 - NO GUESSING, STRICT UNKNOWN) ---
+        public List<PlcInfo> GetDeviceList()
         {
             if (_project == null) CheckProject();
-            List<string> plcNames = new List<string>();
+            List<PlcInfo> results = new List<PlcInfo>();
+            if (_project == null) return results;
 
-            if (_project == null) return plcNames;
-
-            // 1. Quét PLC ở ngoài cùng (Root)
-            foreach (Device device in _project.Devices)
+            List<Device> stations = new List<Device>();
+            try
             {
-                plcNames.Add(device.Name);
+                foreach (Device d in _project.Devices) stations.Add(d);
+                foreach (DeviceUserGroup group in _project.DeviceGroups) ScanGroupRecursiveForObj(group, stations);
             }
+            catch (Exception ex) { Console.WriteLine($"[WARNING] Error scanning devices: {ex.Message}"); }
 
-            // 2. Quét PLC nằm trong các Group (Folder)
-            foreach (DeviceUserGroup group in _project.DeviceGroups)
+            foreach (Device station in stations)
             {
-                ScanGroupRecursive(group, plcNames);
-            }
+                try
+                {
+                    // 1. Tìm Target Item
+                    DeviceItem targetItem = FindIntelligentItem(station);
+                    if (targetItem == null)
+                        targetItem = FindItemByKeywordRecursive(station.DeviceItems, new[] { "HMI", "Panel", "Unified", "PC", "MTP", "KTP", "ITC", "Comfort", "Basic" });
 
-            return plcNames;
+                    if (targetItem != null || station.DeviceItems.Count > 0)
+                    {
+                        if (targetItem == null) targetItem = station.DeviceItems[0];
+
+                        PlcInfo info = new PlcInfo();
+                        string typeId = targetItem.TypeIdentifier ?? "";
+                        string stationTypeId = station.TypeIdentifier ?? "";
+                        string category = "Unknown";
+
+                        // [1] PHÂN LOẠI
+                        if (stationTypeId.Contains("PC") || typeId.Contains("PC") || typeId.Contains("Unified")) category = "SCADA";
+                        else if (typeId.Contains("Panel") || typeId.Contains("HMI") || typeId.Contains("MTP") || typeId.Contains("KTP")) category = "HMI";
+                        else if (typeId.Contains("CPU") || typeId.Contains("S7")) category = "PLC";
+
+                        if (category == "Unknown")
+                        {
+                            string n = station.Name.ToUpper();
+                            if (n.Contains("HMI")) category = "HMI";
+                            else if (n.Contains("PC")) category = "SCADA";
+                            else if (n.Contains("PLC")) category = "PLC";
+                        }
+
+                        // [2] NAME
+                        if (category == "SCADA" || category == "PLC") info.Name = targetItem.Name; 
+                        else info.Name = station.Name; 
+
+                        // [3] ARTICLE NUMBER
+                        string orderNum = GetDeviceAttribute(targetItem, "OrderNumber");
+                        if (string.IsNullOrWhiteSpace(orderNum)) orderNum = GetDeviceAttribute(targetItem, "ArticleNumber");
+                        if (string.IsNullOrWhiteSpace(orderNum))
+                        {
+                            foreach (DeviceItem hwItem in GetAllItemsFlat(station))
+                            {
+                                string hId = hwItem.TypeIdentifier ?? "";
+                                if (hId.Contains("CPU") || category == "HMI")
+                                {
+                                    string o = GetDeviceAttribute(hwItem, "OrderNumber");
+                                    if (string.IsNullOrWhiteSpace(o)) o = GetDeviceAttribute(hwItem, "ArticleNumber");
+                                    if (string.IsNullOrWhiteSpace(o) && hId.StartsWith("OrderNumber:"))
+                                        o = hId.Split('/')[0].Replace("OrderNumber:", "").Trim();
+                                    
+                                    if (!string.IsNullOrWhiteSpace(o)) { orderNum = o; break; }
+                                }
+                            }
+                        }
+                        if (string.IsNullOrWhiteSpace(orderNum)) orderNum = GetDeviceAttribute(station, "OrderNumber");
+                        info.ArticleNumber = !string.IsNullOrWhiteSpace(orderNum) ? orderNum : "Unknown";
+
+
+                        // [4] DEVICE TYPE (MODEL)
+                        string shortDes = GetDeviceAttribute(targetItem, "ShortDesignation");
+                        
+                        // Quét Hardware nếu chưa có tên
+                        if (string.IsNullOrWhiteSpace(shortDes) || shortDes == "Unknown Device")
+                        {
+                            foreach (DeviceItem hwItem in GetAllItemsFlat(station))
+                            {
+                                string hwId = hwItem.TypeIdentifier ?? "";
+                                string hwName = hwItem.Name ?? "";
+                                
+                                if (hwName.Contains("Rack") || hwName.Contains("Rail") || hwId.Contains("Rack")) continue;
+
+                                bool isCandidate = hwId.Contains("CPU") || hwId.Contains("S7") || hwId.Contains("HMI") || hwId.Contains("Panel") || hwId.Contains("PC");
+                                
+                                if (isCandidate)
+                                {
+                                    string tempDes = GetDeviceAttribute(hwItem, "ShortDesignation");
+                                    if (string.IsNullOrWhiteSpace(tempDes)) tempDes = GetDeviceAttribute(hwItem, "ProductDesignation");
+                                    if (string.IsNullOrWhiteSpace(tempDes)) tempDes = GetDeviceAttribute(hwItem, "TypeDesignation");
+                                    if (string.IsNullOrWhiteSpace(tempDes)) tempDes = GetDeviceAttribute(hwItem, "CatalogName");
+                                    if (string.IsNullOrWhiteSpace(tempDes) && hwName.StartsWith("CPU")) tempDes = hwName;
+
+                                    if (string.IsNullOrWhiteSpace(tempDes) && !string.IsNullOrEmpty(hwId) && !hwId.StartsWith("OrderNumber:"))
+                                    {
+                                        tempDes = FormatSiemensTypeName(hwId);
+                                    }
+
+                                    if (!string.IsNullOrWhiteSpace(tempDes)) { shortDes = tempDes; break; }
+                                }
+                            }
+                        }
+
+                        // ĐÃ XÓA KHỐI CODE "ĐOÁN TÊN TỪ MÃ HÀNG" (ArticleNumber fallback)
+                        // Để đảm bảo nếu TIA không trả về tên, nó sẽ rơi xuống Unknown Model bên dưới
+
+                        
+                        // FIX CHO SCADA: Lấy tên Station nếu Unknown
+                        if (category == "SCADA" && (string.IsNullOrWhiteSpace(shortDes) || shortDes.Contains("Unknown"))) 
+                        {
+                            shortDes = station.Name; 
+                        }
+                        
+                        // CHỐT: Nếu vẫn rỗng, gán Unknown Model
+                        if (string.IsNullOrWhiteSpace(shortDes)) shortDes = "Unknown Model";
+                        
+                        info.CpuType = $"{shortDes} [{category}]";
+
+
+                        // [5] FIRMWARE
+                        string fw = GetDeviceAttribute(targetItem, "Version");
+                        if (string.IsNullOrWhiteSpace(fw) && typeId.Contains("/V"))
+                        {
+                             var parts = typeId.Split(new[] { "/V" }, StringSplitOptions.None);
+                             if (parts.Length > 1) fw = parts[1];
+                        }
+                        info.Version = !string.IsNullOrWhiteSpace(fw) ? "V" + fw : "Unknown";
+
+
+                        // [6] IP ADDRESS (MULTI-IP)
+                        info.IpAddress = GetAllIpsFromStation(station);
+
+                        results.Add(info);
+                    }
+                }
+                catch (Exception innerEx) { Console.WriteLine($"[WARNING] Skipping device: {innerEx.Message}"); }
+            }
+            return results;
         }
 
-        // Hàm phụ trợ đệ quy cho GetPlcList
-        private void ScanGroupRecursive(DeviceUserGroup group, List<string> names)
+        // --- CÁC HÀM PHỤ TRỢ ---
+
+        private string GetDeviceAttribute(IEngineeringObject obj, string attrName)
         {
-            // Lấy Device trong Group hiện tại
-            foreach (Device device in group.Devices)
-            {
-                names.Add(device.Name);
-            }
-
-            // Tìm tiếp trong các Group con
-            foreach (DeviceUserGroup subGroup in group.Groups)
-            {
-                ScanGroupRecursive(subGroup, names);
-            }
+            try { var val = obj.GetAttribute(attrName); return val != null ? val.ToString() : ""; } catch { return ""; }
         }
 
-        public void SetPLCName(string authorName) { }
-        #endregion
+        private string FormatSiemensTypeName(string typeId)
+        {
+            try
+            {
+                var parts = typeId.Split('.');
+                var rawName = parts.Reverse().FirstOrDefault(p => 
+                    p.StartsWith("CPU") || p.StartsWith("KTP") || p.StartsWith("MTP") || p.StartsWith("IPC") || p.StartsWith("HMI") || p.Contains("Unified"));
 
+                if (rawName == null) return null;
+
+                if (rawName.StartsWith("CPU"))
+                {
+                    if (!rawName.Contains(" ")) rawName = rawName.Replace("CPU", "CPU "); 
+                    if (rawName.Contains("_"))
+                    {
+                        int firstUnderscore = rawName.IndexOf('_');
+                        StringBuilder sb = new StringBuilder(rawName);
+                        sb[firstUnderscore] = ' '; 
+                        rawName = sb.ToString().Replace('_', '/'); 
+                    }
+                    return rawName.Trim();
+                }
+                return rawName.Replace("_", " ");
+            }
+            catch { return null; }
+        }
+
+        private string GetAllIpsFromStation(Device station)
+        {
+            var allItems = GetAllItemsFlat(station);
+            HashSet<string> foundIps = new HashSet<string>();
+
+            foreach (var item in allItems)
+            {
+                try
+                {
+                    var net = item.GetService<NetworkInterface>();
+                    if (net != null)
+                    {
+                        foreach (Node node in net.Nodes)
+                        {
+                            var addr = node.GetAttribute("Address");
+                            if (addr != null)
+                            {
+                                string sAddr = addr.ToString();
+                                if (sAddr.Contains(".")) foundIps.Add(sAddr);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+            if (foundIps.Count == 0) return "0.0.0.0";
+            return string.Join(" | ", foundIps);
+        }
+
+        private List<DeviceItem> GetAllItemsFlat(Device station)
+        {
+            List<DeviceItem> list = new List<DeviceItem>();
+            AddItemsRecursive(station.DeviceItems, list);
+            return list;
+        }
+        private void AddItemsRecursive(DeviceItemComposition items, List<DeviceItem> list)
+        {
+            foreach(DeviceItem item in items) { list.Add(item); AddItemsRecursive(item.DeviceItems, list); }
+        }
+        private DeviceItem FindIntelligentItem(IEngineeringObject deviceOrItem)
+        {
+            try {
+                var provider = deviceOrItem as IEngineeringServiceProvider;
+                var softContainer = provider?.GetService<SoftwareContainer>();
+                if (softContainer != null && (softContainer.Software is PlcSoftware || softContainer.Software is HmiSoftware)) return deviceOrItem as DeviceItem;
+                DeviceItemComposition items = null;
+                if (deviceOrItem is Device d) items = d.DeviceItems; else if (deviceOrItem is DeviceItem di) items = di.DeviceItems;
+                if (items != null) { foreach (DeviceItem item in items) { var found = FindIntelligentItem(item); if (found != null) return found; } }
+            } catch { } return null;
+        }
+        private DeviceItem FindItemByKeywordRecursive(DeviceItemComposition items, string[] keywords)
+        {
+            if (items == null) return null;
+            foreach (DeviceItem item in items) {
+                string id = item.TypeIdentifier ?? ""; string name = item.Name ?? "";
+                if (keywords.Any(k => id.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0)) return item;
+                var found = FindItemByKeywordRecursive(item.DeviceItems, keywords); if (found != null) return found;
+            } return null;
+        }
+        public string GetPlcTypeIdentifier(string deviceName) { var list = GetDeviceList(); var d = list.FirstOrDefault(x => x.Name == deviceName); return d != null ? d.ArticleNumber : "Unknown"; }
+        public string GetPlcIpAddress(string deviceName) { var list = GetDeviceList(); var d = list.FirstOrDefault(x => x.Name == deviceName); return d != null ? d.IpAddress : "Unknown"; }
+
+        #endregion
+        
         #region 4. Software & Compilation
         public void CreateFBblockFromSource(string sourcePath)
         {
@@ -337,19 +577,17 @@ namespace Middleware_console
 
         private void BuildItemsRecursive(string deviceName, IEngineeringComposition container, List<ScadaItemModel> items)
         {
-            // (Code SCADA giữ nguyên logic cũ của bạn để tránh lỗi biên dịch các class phụ trợ)
-            // Bạn có thể copy lại phần nội dung hàm này từ code gốc nếu cần chi tiết
-            // Vì nó khá dài và không ảnh hưởng đến lỗi GetPlcList hiện tại
+            // Not implemented yet
         }
-
-        // Cần thêm lại các hàm CreateInternalTagGeneric, CreateItemGeneric từ code cũ vào đây
-        // (Tôi rút gọn để tập trung vào phần lỗi chính, bạn nhớ giữ lại nhé)
         private IEngineeringObject CreateItemGeneric(IEngineeringComposition container, string typeName, string name)
         {
-            // ... Code cũ ...
-            return null; // Placeholder
+            // Not implemented yet
+            return null;
         }
-        private void CreateInternalTagGeneric(string deviceName, string tag, string type) { }
+        private void CreateInternalTagGeneric(string deviceName, string tag, string type)
+        {
+            // Not implemented yet
+        }
         #endregion
 
         #region 7. Helpers (Generic & Safe)
@@ -477,6 +715,16 @@ namespace Middleware_console
         private void SetAttributeSafe(IEngineeringObject obj, string name, object value)
         {
             try { obj.SetAttribute(name, value); } catch { }
+        }
+
+        private void ScanGroupRecursiveForObj(DeviceUserGroup group, List<Device> resultList)
+        {
+            foreach (Device d in group.Devices) resultList.Add(d);
+            foreach (DeviceUserGroup subGroup in group.Groups) ScanGroupRecursiveForObj(subGroup, resultList);
+        }
+        private string GetAttributeSafe(IEngineeringObject obj, string attrName)
+        {
+            try { var val = obj.GetAttribute(attrName); return val != null ? val.ToString() : ""; } catch { return ""; }
         }
         #endregion
 
@@ -639,7 +887,7 @@ namespace Middleware_console
                 // E. Dọn dẹp file rác
                 try { Directory.Delete(tempBackupPath, true); } catch { }
                 return $"Success (Replaced): Updated via Backup/Restore.\nDetails: {restoreResult}";
-                
+
             }
             catch (Exception ex)
             {
@@ -813,11 +1061,62 @@ namespace Middleware_console
 
             return "Restore Completed.";
         }
+
+        public List<PlcFamilyModel> LoadPlcCatalog()
+        {
+            try
+            {
+                string jsonFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PLCCatalog.json");
+                if (!File.Exists(jsonFilePath))
+                    throw new FileNotFoundException("Catalog file not found!", jsonFilePath);
+
+                string jsonContent = File.ReadAllText(jsonFilePath);
+
+                // Deserialize vào Model mới
+                var catalog = Newtonsoft.Json.JsonConvert.DeserializeObject<List<PlcFamilyModel>>(jsonContent);
+                return catalog ?? new List<PlcFamilyModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] Failed to load PLC Catalog: {ex.Message}");
+                return new List<PlcFamilyModel>();
+            }
+        }
         #endregion
     }
-       
+
     #region Data Models
-        public class ScadaScreenModel
+
+    // 1. FAMILY
+    public class PlcFamilyModel
+    {
+        public string Family { get; set; } // VD: "S7-1200"
+        public List<PlcDeviceModel> Devices { get; set; }
+    }
+    // 2. DEVICE NAME
+    public class PlcDeviceModel
+    {
+        public string Name { get; set; } // VD: "CPU 1214C..."
+        public List<PlcVariantModel> Variants { get; set; }
+    }
+    // 3. DEVICE VARIANT
+    public class PlcVariantModel
+    {
+        public string OrderNumber { get; set; } // VD: "6ES7..."
+        public List<string> Versions { get; set; }
+    }
+    // 4. SCANNED DEVICE INFO
+    public class PlcInfo
+    {
+        public string Name { get; set; }          // Tên CPU (VD: PLC_1)
+        public string CpuType { get; set; }       // Loại CPU (VD: CPU 1516-3 PN)
+        public string ArticleNumber { get; set; } // Mã hàng (VD: 6ES7 516-...)
+        public string Version { get; set; }       // Firmware (VD: V2.9)
+        public string IpAddress { get; set; }     // IP
+
+        public string ShowMenu => $"{Name} - {CpuType} ({IpAddress})"; // Dùng để hiện menu chọn
+    }
+    public class ScadaScreenModel
     {
         public string ScreenName { get; set; }
         public List<ScadaLayerModel> Layers { get; set; }
@@ -838,5 +1137,6 @@ namespace Middleware_console
         public List<ScadaItemModel> Items { get; set; }
         public string TagName { get; set; }
     }
+
     #endregion
 }
