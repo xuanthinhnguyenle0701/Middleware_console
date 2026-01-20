@@ -138,5 +138,39 @@ namespace Middleware_console
             Console.WriteLine();
             Console.CursorVisible = true;
         }
+        // Hàm in thông tin (Màu Cyan - Xanh lơ)
+        public static void PrintInfo(string message)
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"   [INFO] {message}");
+            Console.ResetColor();
+        }
+        // --- HÀM PHỤ TRỢ: IN MÀU TỰ ĐỘNG ---
+        public static void PrintResult(string msg)
+        {
+            Console.WriteLine(); // Xuống dòng cho thoáng
+            if (string.IsNullOrEmpty(msg)) return;
+
+            // Tự động chọn màu dựa vào nội dung thông báo
+            if (msg.ToUpper().Contains("SUCCESS"))
+            {
+                Console.ForegroundColor = ConsoleColor.Green; // Xanh lá
+            }
+            else if (msg.ToUpper().Contains("WARNING"))
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow; // Vàng
+            }
+            else if (msg.ToUpper().Contains("ERROR") || msg.ToUpper().Contains("FAILED"))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;   // Đỏ
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;  // Xanh dương (Tin tức)
+            }
+
+            Console.WriteLine(msg);
+            Console.ResetColor(); // Trả lại màu mặc định
+        }
     }
 }

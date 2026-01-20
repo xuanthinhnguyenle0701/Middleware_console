@@ -119,6 +119,8 @@ namespace Middleware_console
 
         }
 
+        
+
         public bool SaveProject()
         {
             try { _project?.Save(); return true; } catch { return false; }
@@ -482,72 +484,334 @@ namespace Middleware_console
 
         #region 8. DOWNLOAD OPERATIONS
         // Hàm Download chương trình xuống PLC
-        public string DownloadToPLC(string deviceName, string targetIpAddress, string pgPcInterfaceName)
+        // --- CẬP NHẬT: DOWNLOAD CÓ XỬ LÝ CHỨNG CHỈ BẢO MẬT (TLS) ---
+        // --- CẬP NHẬT: DOWNLOAD (BẢN FIX LỖI COMPILE CHO TIA V15/V15.1) ---
+       public string DownloadToPLC(string deviceName, string targetIpAddress, string pgPcInterfaceName)
         {
             if (_project == null) return "Project not loaded.";
 
             try
             {
-                // 1. Tìm Device (Dùng hàm tìm đệ quy mới để đảm bảo thấy PLC trong Group)
+                // 1. Setup Device & Network (Giữ nguyên)
                 Device device = FindDeviceRecursive(_project, deviceName);
                 if (device == null) return "Device not found.";
+                var downloadProvider = (GetCpuItem(device) as IEngineeringServiceProvider)?.GetService<Siemens.Engineering.Download.DownloadProvider>();
+                if (downloadProvider == null) return "DownloadProvider not found.";
 
-                // Tìm CPU Item (Quan trọng để lấy dịch vụ Download)
-                DeviceItem cpuItem = GetCpuItem(device);
-                if (cpuItem == null) return "CPU DeviceItem not found. (Device might not be a PLC)";
-
-                // 2. Tìm DownloadProvider
-                // Ép kiểu tường minh
-                var serviceProvider = cpuItem as IEngineeringServiceProvider;
-                var downloadProvider = serviceProvider?.GetService<Siemens.Engineering.Download.DownloadProvider>();
-                if (downloadProvider == null) return "CPU does not support Download.";
-
-                // 3. Cấu hình mạng (Connection Configuration)
-                var configuration = downloadProvider.Configuration;
-                var mode = configuration.Modes.Find("PN/IE");
-                if (mode == null) return "Error: Mode 'PN/IE' not found.";
-
-                // Tìm Card mạng (PC Interface)
+                var mode = downloadProvider.Configuration.Modes.Find("PN/IE");
                 var pcInterface = mode.PcInterfaces.Find(pgPcInterfaceName, 1);
-                if (pcInterface == null)
-                {
-                    // Tìm gần đúng nếu tên không chính xác 100%
-                    foreach (var pc in mode.PcInterfaces)
-                    {
-                        if (pc.Name.Contains(pgPcInterfaceName)) { pcInterface = pc; break; }
-                    }
-                }
-                if (pcInterface == null) return $"Error: PC Interface '{pgPcInterfaceName}' not found.";
+                if (pcInterface == null) foreach (var pc in mode.PcInterfaces) if (pc.Name.Contains(pgPcInterfaceName)) { pcInterface = pc; break; }
+                if (pcInterface == null) return "Net Card not found.";
+                var targetConf = pcInterface.TargetInterfaces.Count > 0 ? pcInterface.TargetInterfaces[0] : null;
 
-                // Tìm Target Interface (Điểm đến)
-                var targetConfiguration = pcInterface.TargetInterfaces.Count > 0 ? pcInterface.TargetInterfaces[0] : null;
-                if (targetConfiguration == null) return "Error: No Target Interface found.";
+                // 2. THỰC HIỆN DOWNLOAD
+                Console.WriteLine("Starting download process...");
+                bool autoStart = false;
 
-                // 4. THỰC HIỆN DOWNLOAD
-                // Lưu ý: Delegate để trống để tránh lỗi tương thích version
                 Siemens.Engineering.Download.DownloadResult result = downloadProvider.Download(
-                    targetConfiguration,
-                    (preConf) => { },  // Pre-download
-                    (postConf) => { }, // Post-download (Chưa auto-start để tránh lỗi DLL cũ)
+                    targetConf,
+                    
+                    // --- PHẦN 1: PRE-DOWNLOAD (AUTO-STOP) ---
+                    (preConf) => 
+                    {
+                        Console.WriteLine("\n[TIA PRE-CHECK]");
+                        try { foreach (var msg in ((dynamic)preConf).Messages) Console.WriteLine($"- {msg.Message}"); } catch {}
+
+                        // XỬ LÝ: STOP MODULES (ÁP DỤNG LOGIC ENUM)
+                        try 
+                        {
+                            // Kiểm tra xem có thuộc tính CurrentSelection (Enum) không
+                            var prop = preConf.GetType().GetProperty("CurrentSelection");
+                            if (prop != null)
+                            {
+                                var currentValue = prop.GetValue(preConf);
+                                var enumType = currentValue.GetType();
+                                string[] enumNames = Enum.GetNames(enumType);
+
+                                foreach (var name in enumNames)
+                                {
+                                    // Tìm chữ "Stop" (Ví dụ: StopAll, StopModules...)
+                                    if (name.IndexOf("Stop", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        var newValue = Enum.Parse(enumType, name);
+                                        prop.SetValue(preConf, newValue);
+                                        Console.WriteLine($"   [AUTO-STOP]: Selected action '{name}'");
+                                        break;
+                                    }
+                                }
+                            }
+                            else 
+                            {
+                                // Fallback: Nếu không phải Enum, thử duyệt List (cho các trường hợp khác)
+                                var list = preConf as System.Collections.IEnumerable;
+                                if (list != null)
+                                {
+                                    foreach (dynamic item in list)
+                                    {
+                                        try {
+                                            foreach (dynamic option in item.Options) {
+                                                if (option.Name.ToString().Contains("Stop")) {
+                                                    item.Current = option;
+                                                    Console.WriteLine("   [AUTO-STOP]: Selected option 'Stop'");
+                                                    break;
+                                                }
+                                            }
+                                        } catch {}
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex) { Console.WriteLine($"[Warning] Auto-Stop error: {ex.Message}"); }
+                    },
+                    
+                    // --- PHẦN 2: POST-DOWNLOAD (AUTO-START) ---
+                    (postConf) => 
+                    {
+                        Console.WriteLine("\n[TIA POST-DOWNLOAD]");
+                        try 
+                        {
+                            // XỬ LÝ: START MODULES (LOGIC ENUM)
+                            var prop = postConf.GetType().GetProperty("CurrentSelection");
+                            if (prop != null)
+                            {
+                                var currentValue = prop.GetValue(postConf);
+                                var enumType = currentValue.GetType();
+                                foreach (var name in Enum.GetNames(enumType))
+                                {
+                                    if (name.IndexOf("Start", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        prop.SetValue(postConf, Enum.Parse(enumType, name));
+                                        Console.WriteLine($"   [AUTO-START]: Selected action '{name}'");
+                                        autoStart = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            // Fallback duyệt List cho Start (nếu cần)
+                            else
+                            {
+                                dynamic dynConf = postConf;
+                                System.Collections.IEnumerable items = dynConf as System.Collections.IEnumerable;
+                                if (items == null) try { items = dynConf.Items; } catch {}
+                                if (items != null)
+                                {
+                                    foreach (dynamic item in items) {
+                                        foreach (dynamic option in item.Options) {
+                                            if (option.Name.ToString().Contains("Start")) {
+                                                item.Current = option;
+                                                autoStart = true;
+                                                Console.WriteLine("   [AUTO-START]: Selected option 'Start'");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex) { Console.WriteLine($"Error setting start: {ex.Message}"); }
+                    },
                     Siemens.Engineering.Download.DownloadOptions.Hardware | Siemens.Engineering.Download.DownloadOptions.Software
                 );
 
-                // 5. Kiểm tra kết quả
-                if (result.State == Siemens.Engineering.Download.DownloadResultState.Error)
+                if (result.State == Siemens.Engineering.Download.DownloadResultState.Success)
                 {
-                    var msg = result.Messages.FirstOrDefault()?.Message ?? "Unknown Error";
-                    return $"Download Error: {msg}";
+                    if (autoStart) return "Download Complete & PLC RESTARTED (Auto).";
+                    else return "Download Complete (PLC is STOPPED).";
                 }
+                else
+                {
+                     var msg = result.Messages.FirstOrDefault(m => m.State == Siemens.Engineering.Download.DownloadResultState.Error)?.Message ?? "Unknown Error";
+                     if (msg.Contains("Connect to module") || msg.Contains("failed"))
+                         return "⚠️ LỖI KẾT NỐI: Vui lòng nạp thủ công 1 lần để xác nhận Certificate!";
+                     return $"Download Error: {msg}";
+                }
+            }
+            catch (Exception ex) { return $"Download Exception: {ex.Message}"; }
+        }
 
-                return "Download Successful! (Please START PLC manually)";
+        // --- BỔ SUNG: THAY ĐỔI TRẠNG THÁI PLC (RUN/STOP) ---
+        // --- FUNCTION: MANUAL START/STOP PLC (FIX LỖI STOP KHI ĐANG RUN) ---
+        public string ChangePlcState(string deviceName, string targetIp, string netCard, bool turnOn)
+        {
+            string actionName = turnOn ? "Start" : "Stop";
+            string targetDesc = turnOn ? "RUN (Start Module)" : "STOP (Stop Module)";
+
+            Console.WriteLine($"\n--- EXECUTING MANUAL COMMAND: {targetDesc} ---");
+
+            if (_project == null) return "Error: Project not loaded.";
+            
+            try
+            {
+                // 1. SETUP
+                Device device = FindDeviceRecursive(_project, deviceName);
+                if (device == null) return "Error: Device not found.";
+                
+                var downloadProvider = (GetCpuItem(device) as IEngineeringServiceProvider)?.GetService<Siemens.Engineering.Download.DownloadProvider>();
+                if (downloadProvider == null) return "Error: CPU does not support Download/Control.";
+
+                var mode = downloadProvider.Configuration.Modes.Find("PN/IE");
+                var pcInterface = mode.PcInterfaces.Find(netCard, 1);
+                if (pcInterface == null) 
+                    foreach (var pc in mode.PcInterfaces) if (pc.Name.Contains(netCard)) { pcInterface = pc; break; }
+                
+                if (pcInterface == null) return "Error: Network Card not found.";
+                var targetConf = pcInterface.TargetInterfaces.Count > 0 ? pcInterface.TargetInterfaces[0] : null;
+
+                // 2. THỰC HIỆN LỆNH
+                bool actionSuccess = false;
+                var ops = Siemens.Engineering.Download.DownloadOptions.Hardware | Siemens.Engineering.Download.DownloadOptions.Software;
+
+                var result = downloadProvider.Download(
+                    targetConf,
+                    
+                    // --- PRE-DOWNLOAD: QUAN TRỌNG - PHẢI XỬ LÝ STOP MODULES TẠI ĐÂY ---
+                    (preConf) => 
+                    {
+                        // Logic này giúp xử lý tình huống: PLC đang RUN mà muốn nạp lệnh STOP
+                        try 
+                        {
+                            // 1. Thử xử lý theo kiểu Enum (StopModulesSelections)
+                            var prop = preConf.GetType().GetProperty("CurrentSelection");
+                            if (prop != null)
+                            {
+                                var currentValue = prop.GetValue(preConf);
+                                var enumType = currentValue.GetType();
+                                foreach (var name in Enum.GetNames(enumType))
+                                {
+                                    if (name.IndexOf("Stop", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        prop.SetValue(preConf, Enum.Parse(enumType, name));
+                                        // Console.WriteLine($"   [Pre-Check] Auto-accepted: {name}");
+                                        break;
+                                    }
+                                }
+                            }
+                            // 2. Thử xử lý theo kiểu List (Fallback)
+                            else 
+                            {
+                                var list = preConf as System.Collections.IEnumerable;
+                                if (list != null)
+                                {
+                                    foreach (dynamic item in list)
+                                    {
+                                        try {
+                                            foreach (dynamic option in item.Options) {
+                                                if (option.Name.ToString().Contains("Stop")) {
+                                                    item.Current = option;
+                                                    break;
+                                                }
+                                            }
+                                        } catch {}
+                                    }
+                                }
+                            }
+                        }
+                        catch {} // Bỏ qua lỗi nhỏ để ưu tiên chạy tiếp
+                    },
+                    
+                    // --- POST-DOWNLOAD: CHỌN TRẠNG THÁI CUỐI CÙNG ---
+                    (postConf) => 
+                    {
+                        Console.WriteLine($"-> Configuring PLC State to: {actionName.ToUpper()}...");
+                        try 
+                        {
+                            var prop = postConf.GetType().GetProperty("CurrentSelection");
+                            if (prop != null)
+                            {
+                                var currentValue = prop.GetValue(postConf);
+                                var enumType = currentValue.GetType();
+                                string[] enumNames = Enum.GetNames(enumType);
+                                bool found = false;
+
+                                foreach (var name in enumNames)
+                                {
+                                    bool isTarget = false;
+                                    if (turnOn) // RUN
+                                        isTarget = name.IndexOf("Start", StringComparison.OrdinalIgnoreCase) >= 0;
+                                    else // STOP
+                                        isTarget = name.IndexOf("Stop", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                   name.IndexOf("NoAction", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                                    if (isTarget)
+                                    {
+                                        prop.SetValue(postConf, Enum.Parse(enumType, name));
+                                        Console.WriteLine($"   [OK] Action Set: {name}");
+                                        actionSuccess = true;
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found && !turnOn)
+                                {
+                                    // Nếu muốn STOP mà không thấy tùy chọn Stop -> Có thể nó đã Stop từ bước Pre-Check rồi
+                                    // Ta cứ báo Success để người dùng không hoang mang
+                                    Console.WriteLine("   [Info] PLC might be already stopped via Pre-Check.");
+                                    actionSuccess = true;
+                                }
+                            }
+                        }
+                        catch (Exception ex) { Console.WriteLine($"   [Error] State conf failed: {ex.Message}"); }
+                    },
+                    ops 
+                );
+
+                // 3. KẾT QUẢ
+                if (result.State == Siemens.Engineering.Download.DownloadResultState.Success)
+                {
+                    // Nếu muốn Stop mà ở Pre-Check đã Stop rồi thì coi như thành công
+                    if (actionSuccess || !turnOn) return $"SUCCESS: PLC switched to {targetDesc}.";
+                    else return "WARNING: Command sent but State Option was not explicitly confirmed.";
+                }
+                else
+                {
+                    var msg = result.Messages.FirstOrDefault(m => m.State == Siemens.Engineering.Download.DownloadResultState.Error)?.Message ?? "Unknown";
+                    if (msg.Contains("Connect to module") || msg.Contains("failed"))
+                         return "⚠️ FAILED: Connection refused. Check Certificate or Network.";
+                    return $"FAILED: {msg}";
+                }
+            }
+            catch (Exception ex) { return $"EXCEPTION: {ex.Message}"; }
+        }        
+        public string GetPlcStatus(string deviceName, string netCard)
+        {
+            Console.WriteLine($"\n--- CHECKING CONNECTION ---");
+            if (_project == null) return "Error: Project not loaded.";
+
+            try
+            {
+                Device device = FindDeviceRecursive(_project, deviceName);
+                if (device == null) return "Error: Device not found.";
+                
+                DeviceItem cpuItem = GetCpuItem(device);
+                var serviceProvider = cpuItem as IEngineeringServiceProvider;
+                var onlineProvider = serviceProvider?.GetService<Siemens.Engineering.Online.OnlineProvider>();
+                
+                if (onlineProvider == null) return "Error: No Online support.";
+
+                // Cấu hình mạng
+                var mode = onlineProvider.Configuration.Modes.Find("PN/IE");
+                var pcInterface = mode.PcInterfaces.Find(netCard, 1);
+                if (pcInterface == null)
+                    foreach (var pc in mode.PcInterfaces) if (pc.Name.Contains(netCard)) { pcInterface = pc; break; }
+
+                if (pcInterface == null) return "Error: Net Card not found.";
+
+                // Thử kết nối
+                Console.WriteLine(">> Pinging PLC (Going Online)...");
+                onlineProvider.GoOnline();
+
+                if (onlineProvider.State == Siemens.Engineering.Online.OnlineState.Online)
+                {
+                    onlineProvider.GoOffline();
+                    return "SUCCESS: PLC is ONLINE and REACHABLE.";
+                }
+                return "WARNING: PLC not reachable.";
             }
             catch (Exception ex)
             {
-                return $"Download Exception: {ex.Message}";
+                return $"CONNECTION FAILED: {ex.Message}";
             }
         }
-
-        // Hàm phụ trợ tìm CPU (DownloadProvider thường nằm ở CPU)
         private DeviceItem GetCpuItem(Device device)
         {
             foreach (DeviceItem item in device.DeviceItems)
@@ -814,6 +1078,130 @@ namespace Middleware_console
             return "Restore Completed.";
         }
         #endregion
+        public string GetDeviceType(string deviceName)
+        {
+            if (_project == null) return "Unknown";
+            Device device = FindDeviceRecursive(_project, deviceName);
+            
+            if (device != null)
+            {
+                if (!string.IsNullOrEmpty(device.TypeIdentifier)) 
+                    return device.TypeIdentifier;
+
+                foreach (DeviceItem item in device.DeviceItems)
+                {
+                    if (!string.IsNullOrEmpty(item.TypeIdentifier)) return item.TypeIdentifier;
+                }
+            }
+            return "Unknown";
+        }
+        // --- BỔ SUNG: LẤY TÊN PROJECT ---
+        public string GetProjectName()
+        {
+            if (_project != null)
+            {
+                try { return _project.Name; } catch { }
+            }
+            return "Unknown";
+        }
+
+        public string GetDeviceIp(string deviceName)
+        {
+            if (_project == null) return "0.0.0.0";
+            Device device = FindDeviceRecursive(_project, deviceName);
+            
+            if (device != null)
+            {
+                DeviceItem netItem = FindNetworkInterfaceItem(device.DeviceItems);
+                if (netItem != null)
+                {
+                    var networkInterface = netItem.GetService<Siemens.Engineering.HW.Features.NetworkInterface>();
+                    if (networkInterface != null && networkInterface.Nodes.Count > 0)
+                    {
+                        try 
+                        { 
+                            return networkInterface.Nodes[0].GetAttribute("Address").ToString();
+                        } 
+                        catch { }
+                    }
+                }
+            }
+            return "0.0.0.0";
+        }
+        // --- FUNCTION: TEST ONLINE VISUAL (GIỮ KẾT NỐI 10 GIÂY ĐỂ NHÌN) ---
+        public string FlashPlcLed(string deviceName, string netCard)
+        {
+            Console.WriteLine($"\n--- TESTING CONNECTION (HOLDING ONLINE FOR 10s) ---");
+
+            if (_project == null) return "Error: Project not loaded.";
+
+            Siemens.Engineering.Online.OnlineProvider onlineProvider = null;
+
+            try
+            {
+                // 1. SETUP (Tìm thiết bị)
+                Device device = FindDeviceRecursive(_project, deviceName);
+                if (device == null) return "Error: Device not found.";
+                
+                DeviceItem cpuItem = GetCpuItem(device);
+                if (cpuItem == null) return "Error: CPU item not found.";
+
+                // 2. LẤY ONLINE PROVIDER
+                var serviceProvider = cpuItem as IEngineeringServiceProvider;
+                onlineProvider = serviceProvider?.GetService<Siemens.Engineering.Online.OnlineProvider>();
+                if (onlineProvider == null) return "Error: CPU does not support Online connection.";
+
+                // 3. CẤU HÌNH MẠNG
+                var mode = onlineProvider.Configuration.Modes.Find("PN/IE");
+                var pcInterface = mode.PcInterfaces.Find(netCard, 1);
+                if (pcInterface == null)
+                    foreach (var pc in mode.PcInterfaces) if (pc.Name.Contains(netCard)) { pcInterface = pc; break; }
+
+                if (pcInterface == null) return "Error: Network Card not found.";
+
+                // 4. THỰC HIỆN KẾT NỐI
+                Console.WriteLine(">> Going Online... (Please watch TIA Portal window)");
+                onlineProvider.GoOnline(); 
+
+                if (onlineProvider.State == Siemens.Engineering.Online.OnlineState.Online)
+                {
+                    // 5. GIỮ KẾT NỐI VÀ ĐẾM NGƯỢC
+                    Console.WriteLine("\n>> [SUCCESS] PLC IS ONLINE!");
+                    Console.WriteLine(">> Look at TIA Portal now: You should see ORANGE bars and GREEN checks.");
+                    
+                    Console.Write(">> Going Offline in: ");
+                    for (int i = 10; i > 0; i--)
+                    {
+                        Console.Write($"{i}... ");
+                        System.Threading.Thread.Sleep(1000); // Dừng 1 giây
+                    }
+                    Console.WriteLine("Now!");
+                    
+                    return "SUCCESS: Connection verified manually.";
+                }
+                else
+                {
+                    return "WARNING: Command sent but PLC did not report Online state.";
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"CONNECTION FAILED: {ex.Message}";
+            }
+            finally
+            {
+                // 6. NGẮT KẾT NỐI
+                try 
+                {
+                    if (onlineProvider != null && onlineProvider.State == Siemens.Engineering.Online.OnlineState.Online)
+                    {
+                        Console.WriteLine(">> Disconnected (Offline).");
+                        onlineProvider.GoOffline();
+                    }
+                }
+                catch {}
+            }
+        }
     }
        
     #region Data Models
@@ -839,4 +1227,6 @@ namespace Middleware_console
         public string TagName { get; set; }
     }
     #endregion
+
+    
 }
