@@ -167,24 +167,129 @@ namespace Middleware_console
 
         // Hàm CreateDev chuẩn cho JSON (Nhận chuỗi TypeIdentifier)
         public void CreateDev(string devName, string typeIdentifier, string ipX1, string ipX2)
+{
+    if (_project == null) CheckProject();
+    if (string.IsNullOrWhiteSpace(devName)) devName = "Device_1";
+
+    List<string> existingNames = GetPlcList();
+    if (existingNames.Contains(devName))
+        throw new Exception($"Name '{devName}' already exists!");
+
+    Device newDevice = null;
+
+    try
+    {
+        // --- XỬ LÝ WINCC UNIFIED PC ---
+        if (typeIdentifier.Contains("xxxxx") || typeIdentifier.Contains("6AV2 155"))
         {
-            if (_project == null) CheckProject();
-            if (string.IsNullOrWhiteSpace(devName)) devName = "Device_1";
+            Console.WriteLine($"[Auto-Fix] Detected WinCC Unified PC. Starting Optimized Creation...");
 
-            // Kiểm tra trùng tên (Quét cả trong Group để check chính xác)
-            List<string> existingNames = GetPlcList();
-            if (existingNames.Contains(devName))
-                throw new Exception($"Name '{devName}' already exists!");
-
-            // Tạo Device từ chuỗi định danh (VD: OrderNumber:6ES7.../V4.4)
-            Device newDevice = _project.Devices.CreateWithItem(typeIdentifier, devName, devName);
-
-            // Gán IP ngay sau khi tạo
-            if (!string.IsNullOrEmpty(ipX1))
+            // 1. TẠO KHUNG PC (Chỉ thử 2 mã chuẩn nhất để nhanh)
+            string[] pcIds = new string[] { "System:Rack.PC", "OrderNumber:6ES7647-0AA00-1YA0/V3.0" };
+            
+            foreach (string id in pcIds)
             {
-                SetPlcIpAddress(newDevice, ipX1);
+                try 
+                {
+                    newDevice = _project.Devices.CreateWithItem(id, devName, devName);
+                    if (newDevice != null) { Console.WriteLine("   -> [SUCCESS] PC Station created!"); break; }
+                }
+                catch {}
+            }
+
+            // Fallback: Dùng Create() nếu cần
+            if (newDevice == null)
+            {
+                try { newDevice = _project.Devices.Create("System:Device.PC", devName); } catch {}
+            }
+
+            if (newDevice == null) throw new Exception("FATAL: Could not create PC Station.");
+
+            // 2. CẤU HÌNH KHE CẮM (SLOTS)
+            try 
+            {
+                Console.WriteLine("   -> Configuring PC slots (Auto-Name Mode)...");
+                if (newDevice.DeviceItems.Count == 0) throw new Exception("Device Empty.");
+                DeviceItem pcRack = newDevice.DeviceItems[0]; 
+
+                // --- 2.1: Cắm Card mạng IE General ---
+                // Chỉ thử Slot 1-2 (Không dò lan man)
+                bool netPlugged = false;
+                string netId = "OrderNumber:IE General/V2.0"; // TIA V20 ưu tiên bản này
+                
+                for (int i = 1; i <= 2; i++) 
+                {
+                    // Truyền tên "" để TIA tự đặt tên (tránh lỗi Name Invalid)
+                    if (pcRack.CanPlugNew(netId, "", i))
+                    {
+                        pcRack.PlugNew(netId, "IE1", i); // Card mạng thì đặt tên IE1 được
+                        Console.WriteLine($"   -> [SUCCESS] Plugged Network Card at Slot {i}.");
+                        netPlugged = true;
+                        break;
+                    }
+                }
+                if (!netPlugged) Console.WriteLine("   [Info] Could not plug IE General (Skipping).");
+
+                // --- 2.2: Cắm WinCC Unified ---
+                string firmware = "20.0.0.0"; 
+                if (typeIdentifier.Contains("/") && typeIdentifier.Split('/').Length > 1)
+                {
+                    string f = typeIdentifier.Split('/')[1].Replace("V", "").Trim();
+                    if (!string.IsNullOrEmpty(f)) firmware = f;
+                }
+
+                // Mã phần mềm chuẩn
+                string swId = $"OrderNumber:6AV2 155-xxxxx-xxxx/{firmware}";
+                Console.WriteLine($"   ... Plugging Software: {swId}");
+
+                bool swPlugged = false;
+                // Chỉ dò Slot 1 đến 10 (PC Station thường chỉ nằm ở đây, không cần dò đến 125)
+                for (int slotNum = 1; slotNum <= 10; slotNum++)
+                {
+                    // QUAN TRỌNG: Kiểm tra CanPlugNew với tên rỗng ""
+                    if (pcRack.CanPlugNew(swId, "", slotNum))
+                    {
+                        try 
+                        {
+                            // CẮM VỚI TÊN RỖNG -> ĐỂ TIA TỰ ĐẶT TÊN CHUẨN
+                            pcRack.PlugNew(swId, "", slotNum);
+                            Console.WriteLine($"   -> [SUCCESS] Plugged WinCC Unified into Slot {slotNum} (Auto-Named).");
+                            swPlugged = true;
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"      [Retry] Slot {slotNum} rejected: {ex.Message}");
+                        }
+                    }
+                }
+                
+                if (!swPlugged) Console.WriteLine("   [Error] Could not plug WinCC Unified. Check License/Firmware.");
+            }
+            catch (Exception ex) 
+            { 
+                Console.WriteLine($"   [Warning] Slot config error: {ex.Message}"); 
             }
         }
+        else
+        {
+            // --- THIẾT BỊ KHÁC ---
+            newDevice = _project.Devices.CreateWithItem(typeIdentifier, devName, devName);
+        }
+
+        // Gán IP
+        if (newDevice != null && !string.IsNullOrEmpty(ipX1))
+        {
+            try { SetPlcIpAddress(newDevice, ipX1); } catch {}
+        }
+    }
+    catch (Exception ex)
+    {
+        throw new Exception($"Create Failed: {ex.Message}");
+    }
+}
+
+        
 
         // Hàm lấy danh sách PLC (ĐỆ QUY - Hỗ trợ tìm trong Folder/Group)
         public List<string> GetPlcList()
@@ -319,37 +424,201 @@ namespace Middleware_console
         #endregion
 
         #region 6. Advanced SCADA Generation (Beta test)
-        // (Giữ nguyên phần SCADA Generation như cũ của bạn)
         public void GenerateScadaScreenFromData(string deviceName, ScadaScreenModel screenData)
         {
-            if (_project == null) CheckProject();
-            try { CreateUnifiedScreen(deviceName, screenData.ScreenName); } catch { }
+            if (_project == null) throw new Exception("No TIA Project opened.");
 
-            IEngineeringComposition screenItemsComp = GetScreenItemsComposition(deviceName, screenData.ScreenName);
-            if (screenItemsComp == null) throw new Exception("Failed to access ScreenItems");
+            // 1. Tìm HMI Target (Dùng dynamic để hỗ trợ cả 2 loại)
+            dynamic hmiTarget = GetHmiTarget(deviceName);
+            if (hmiTarget == null) throw new Exception($"Device '{deviceName}' not found.");
 
-            Console.WriteLine($"Building screen: {screenData.ScreenName}");
+            Console.WriteLine($">> [Unified Mode] Processing Screen: {screenData.ScreenName}...");
+
+            // 2. [FIX LỖI TẠI ĐÂY] Lấy danh sách màn hình tùy theo loại thiết bị
+            dynamic screens = null;
+            try 
+            {
+                // Cách 1: Dành cho PC-System (HmiSoftware) - Truy cập thẳng
+                screens = hmiTarget.Screens; 
+            }
+            catch 
+            {
+                // Cách 2: Dành cho Panel (HmiTarget) - Phải qua ScreenFolder
+                screens = hmiTarget.ScreenFolder.Screens;
+            }
+
+            if (screens == null) throw new Exception("Cannot locate the Screens container in this device.");
+
+            // Xóa màn cũ (nếu có)
+            foreach (dynamic s in (System.Collections.IEnumerable)screens)
+            {
+                try { if (s.Name == screenData.ScreenName) s.Delete(); } catch { }
+            }
+
+            IEngineeringObject currentScreen = null;
+            try 
+            {
+                // Unified cho phép Create với 1 tham số Name
+                dynamic res = screens.Create(screenData.ScreenName);
+                currentScreen = res as IEngineeringObject;
+            }
+            catch (Exception ex) { throw new Exception($"Failed to create Unified Screen. {ex.Message}"); }
+
+            // 3. Lấy ScreenItems
+            IEngineeringComposition screenItemsComp = (IEngineeringComposition)currentScreen.GetComposition("ScreenItems");
+            if (screenItemsComp == null) throw new Exception("Cannot access ScreenItems.");
+
+            // 4. Gộp Items
             List<ScadaItemModel> allItems = new List<ScadaItemModel>();
             if (screenData.Items != null) allItems.AddRange(screenData.Items);
             if (screenData.Layers != null)
-                foreach (var l in screenData.Layers) if (l.Items != null) allItems.AddRange(l.Items);
+                foreach (var l in screenData.Layers) 
+                    if (l.Items != null) allItems.AddRange(l.Items);
 
-            BuildItemsRecursive(deviceName, screenItemsComp, allItems);
+            // 5. Vẽ
+            BuildUnifiedItemsRecursive(screenItemsComp, allItems);
+            Console.WriteLine("[SUCCESS] WinCC Unified Screen Generated Successfully!");
         }
 
-        private void BuildItemsRecursive(string deviceName, IEngineeringComposition container, List<ScadaItemModel> items)
+        private void BuildUnifiedItemsRecursive(IEngineeringComposition composition, List<ScadaItemModel> items)
         {
-            // (Code SCADA giữ nguyên logic cũ của bạn để tránh lỗi biên dịch các class phụ trợ)
-            // Bạn có thể copy lại phần nội dung hàm này từ code gốc nếu cần chi tiết
-            // Vì nó khá dài và không ảnh hưởng đến lỗi GetPlcList hiện tại
+            dynamic dynComp = composition;
+
+            foreach (var item in items)
+            {
+                if (item.EnableCreation.HasValue && !item.EnableCreation.Value) continue;
+
+                try
+                {
+                    Console.WriteLine($"   + [Unified] Creating {item.Type}: {item.Name}");
+                    
+                    // Unified dùng Type Reflection chuẩn của Siemens
+                    string typeNamespace = "Siemens.Engineering.Hmi.Screen.";
+                    string typeName = "Button"; 
+                    switch (item.Type)
+                    {
+                        case "Circle": typeName = "Circle"; break;
+                        case "Rectangle": typeName = "Rectangle"; break;
+                        case "Button": typeName = "Button"; break;
+                        case "Text": typeName = "TextBox"; break; 
+                        case "IOField": typeName = "IOField"; break;
+                    }
+
+                    Type itemType = GetSiemensType(typeNamespace + typeName);
+                    if (itemType == null) continue;
+
+                    // Vẽ Item
+                    dynamic newItem = dynComp.Create(itemType, item.Name);
+
+                    // Set thuộc tính
+                    if (item.Properties != null)
+                    {
+                        foreach (var prop in item.Properties)
+                        {
+                            SetPropertyUnified((IEngineeringObject)newItem, prop.Key, prop.Value);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"     [Error] {item.Name}: {ex.Message}");
+                }
+            }
         }
 
-        // Cần thêm lại các hàm CreateInternalTagGeneric, CreateItemGeneric từ code cũ vào đây
-        // (Tôi rút gọn để tập trung vào phần lỗi chính, bạn nhớ giữ lại nhé)
-        private IEngineeringObject CreateItemGeneric(IEngineeringComposition container, string typeName, string name)
+        private void SetPropertyUnified(IEngineeringObject obj, string key, object value)
         {
-            // ... Code cũ ...
-            return null; // Placeholder
+            string targetProp = key;
+            object targetVal = value;
+
+            // Mapping JSON -> Unified
+            if (key == "FillColor") targetProp = "BackColor";
+            if (key == "Text") targetProp = "Text";
+
+            // Xử lý màu sắc
+            if (targetProp.Contains("Color") && value is string hex && hex.StartsWith("#"))
+            {
+                try 
+                {
+                    hex = hex.Replace("#", "");
+                    if (hex.Length == 6) hex = "FF" + hex;
+                    targetVal = Convert.ToInt32(hex, 16);
+                } catch { targetVal = 0; }
+            }
+
+            try 
+            { 
+                obj.SetAttribute(targetProp, targetVal); 
+                if (targetProp == "Text") obj.SetAttribute("TextValue", targetVal);
+            } 
+            catch { }
+        }
+
+        #endregion
+
+        #region Helpers
+
+        private dynamic GetHmiTarget(string deviceName)
+        {
+            if (_project == null) return null;
+
+            Device device = _project.Devices.Find(deviceName);
+            if (device == null) return null;
+
+            Console.WriteLine($"   -> Scanning inside device: {deviceName}...");
+            return DeepSearchHmiTarget(device.DeviceItems, 1);
+        }
+        private dynamic DeepSearchHmiTarget(DeviceItemComposition items, int level)
+        {
+            string indent = new string(' ', level * 3);
+
+            foreach (DeviceItem item in items)
+            {
+                Console.WriteLine($"{indent}+ Found item: {item.Name}");
+
+                var container = item.GetService<SoftwareContainer>();
+                if (container != null && container.Software != null)
+                {
+                    // Thủ thuật: Miễn tên kiểu dữ liệu có chữ "Hmi" là chúng ta lấy!
+                    // Cái này sẽ tóm gọn cả "HmiTarget" (Panel) và "HmiSoftware" (PC-System)
+                    string typeName = container.Software.GetType().Name;
+                    if (typeName.Contains("Hmi"))
+                    {
+                        Console.WriteLine($"{indent}  => [HIT] WinCC Unified Runtime Located! (Type: {typeName})");
+                        return container.Software; // Trả về dạng tự do
+                    }
+                }
+
+                if (item.DeviceItems.Count > 0)
+                {
+                    dynamic subTarget = DeepSearchHmiTarget(item.DeviceItems, level + 1);
+                    if (subTarget != null) return subTarget;
+                }
+            }
+            return null;
+        }
+        
+        private Type GetSiemensType(string fullTypeName)
+        {
+            return AppDomain.CurrentDomain.GetAssemblies()
+                .SelectMany(a => a.GetTypes())
+                .FirstOrDefault(t => t.FullName != null && t.FullName.Equals(fullTypeName, StringComparison.OrdinalIgnoreCase));
+        }        private IEngineeringObject CreateItemGeneric(IEngineeringComposition container, string typeName, string name)
+        {
+            try
+            {
+                Type itemType = GetSiemensType(typeName);
+                if (itemType == null) return null;
+
+                dynamic dynContainer = container;
+                dynamic newItem = dynContainer.Create(itemType, name);
+                return newItem as IEngineeringObject;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] CreateItemGeneric failed: {ex.Message}");
+                return null;
+            }
         }
         private void CreateInternalTagGeneric(string deviceName, string tag, string type) { }
         #endregion
@@ -1202,7 +1471,127 @@ namespace Middleware_console
                 catch {}
             }
         }
+        #region 10. WinCC Unified Networking
+       public string CreateUnifiedConnectionCombined(string hmiName, string hmiIp, string plcIp, string connectionName = "Connection_1")
+        {
+            if (_project == null) return "Project chưa mở.";
+
+            try
+            {
+                Device hmiDevice = FindDeviceRecursive(_project, hmiName);
+                if (hmiDevice == null) return $"[ERROR] Không tìm thấy thiết bị: {hmiName}";
+
+                var software = GetSoftware(hmiDevice) as HmiSoftware;
+                var connections = software.Connections;
+                var existing = connections.Find(connectionName);
+                if (existing != null) existing.Delete();
+
+                // Bước 1: Tạo kết nối và định danh Driver
+                var newConn = connections.Create(connectionName);
+                newConn.SetAttribute("CommunicationDriver", "SIMATIC S7 1200/1500");
+
+                // Bước 2: GIẢI PHÁP - Gán trực tiếp từng thuộc tính thay vì gửi chuỗi InitialAddress
+                // Cách này giúp TIA Portal không phải tự phân tách chuỗi, tránh lỗi format
+                try 
+                {
+                    newConn.SetAttribute("HostAddress", hmiIp); // IP của HMI
+                    newConn.SetAttribute("PlcAddress", plcIp); // IP của PLC
+                    newConn.SetAttribute("HostAccessPoint", "S7ONLINE");
+                    
+                    // Gán các thông số phụ mà Driver yêu cầu
+                    newConn.SetAttribute("PlcExpansionSlot", 1); 
+                    newConn.SetAttribute("PlcRack", 0);
+                    newConn.SetAttribute("PlcIsCyclicOperation", true);
+                }
+                catch 
+                {
+                    // Fallback: Nếu gán rời bị chặn, dùng chuỗi tối giản nhất (không có dấu ; ở cuối)
+                    string minimal = $"Version=16.0.0.0;HostAddress={hmiIp};PlcAddress={plcIp}";
+                    newConn.SetAttribute("InitialAddress", minimal);
+                }
+
+                return $"[SUCCESS] Đã tạo và thiết lập kết nối: {connectionName}";
+            }
+            catch (Exception ex)
+            {
+                return $"[ERROR] Lỗi hệ thống: {ex.Message}";
+            }
+        }
+        #endregion
+        #region 11. WinCC Unified Tag Creation
+        public void ImportHmiTagsFromCsv(string hmiName, string csvPath)
+{
+    if (_project == null) { ConsoleUI.PrintResult("[ERROR] Project chưa mở."); return; }
+
+    try
+    {
+        if (!System.IO.File.Exists(csvPath)) {
+            ConsoleUI.PrintResult($"[ERROR] Không tìm thấy file: {csvPath}"); return;
+        }
+
+        Device hmiDevice = FindDeviceRecursive(_project, hmiName);
+        var software = GetSoftware(hmiDevice) as HmiSoftware;
+        var table = software.TagTables.Find("Default tag table") ?? software.TagTables.Create("Imported_Tags");
+
+        string[] lines = System.IO.File.ReadAllLines(csvPath);
+        int successCount = 0;
+
+        for (int i = 1; i < lines.Length; i++)
+        {
+            // Quan trọng: Thử dùng ';' nếu file export từ Excel Việt Nam/Châu Âu
+            string[] columns = lines[i].Split(','); 
+            if (columns.Length < 4) columns = lines[i].Split(';'); 
+
+            // Kiểm tra an toàn để tránh lỗi Index outside bounds
+            if (columns.Length < 4) {
+                ConsoleUI.PrintResult($"[ERROR] Dòng {i + 1} không đủ 4 cột dữ liệu cơ bản.");
+                continue;
+            }
+
+            string tagName = columns[0].Trim();      // Cột A
+            string connName = columns[1].Trim();     // Cột B
+            string address = columns[2].Trim();      // Cột C
+            string dataType = columns[3].Trim();     // Cột D
+
+            try 
+            {
+                var tags = table.Tags;
+                if (tags.Find(tagName) != null) tags.Find(tagName).Delete();
+                
+                var newTag = tags.Create(tagName);
+
+                // 1. Gán Connection trước để "Unlock" các trường dữ liệu
+                newTag.SetAttribute("Connection", connName); 
+
+                // 2. Gán DataType (Phải viết hoa chữ đầu: Bool, Int, Real)
+                newTag.SetAttribute("DataType", dataType); 
+
+                // 3. Thiết lập chế độ Tuyệt đối (1 = AbsoluteAccess)
+                newTag.SetAttribute("AccessMode", 1); 
+
+                // 4. Gán địa chỉ tuyệt đối (ví dụ %M1.0)
+                newTag.SetAttribute("Address", address);
+
+                // 5. Gán Acquisition Cycle nếu có (Cột G)
+                if (columns.Length >= 7) {
+                    newTag.SetAttribute("AcquisitionCycle", columns[6].Trim());
+                }
+
+                successCount++;
+                Console.WriteLine($"[INFO] Đã nạp thành công: {tagName}");
+            }
+            catch (Exception ex)
+            {
+                ConsoleUI.PrintResult($"[ERROR] Dòng {i + 1} ({tagName}): {ex.Message}");
+            }
+        }
+        ConsoleUI.PrintResult($"[SUCCESS] Hoàn thành! Đã nạp {successCount}/{lines.Length - 1} tags vào {hmiName}.");
     }
+    catch (Exception ex) { ConsoleUI.PrintResult($"[ERROR] Fatal: {ex.Message}"); }
+}
+#endregion
+    }
+    
        
     #region Data Models
         public class ScadaScreenModel

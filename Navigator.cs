@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 
 namespace Middleware_console
 {
@@ -57,6 +58,7 @@ namespace Middleware_console
         private static string _lastGeneratedFilePath = "";
         private static string _currentMode = "";
 
+        [STAThread]
         static async Task Main(string[] args)
         {
             // Cấu hình bắt buộc cho TIA Openness và Web Request
@@ -153,19 +155,58 @@ namespace Middleware_console
                         }
                         else if (tiaMenuChoice.Contains("2. Open"))
                         {
-                            Console.Write("Enter full path to .ap1x file: ");
-                            string path = Console.ReadLine().Replace("\"", ""); // Xóa ngoặc kép nếu user copy path
-                            
-                            ConsoleUI.PrintStep("Opening Project...");
-                            if (_tiaEngine.CreateTIAproject(path, "", false))
+                            Console.WriteLine("\nOpening File Dialog... (Check Taskbar if hidden)");
+
+                            string path = "";
+
+                            // Mở hộp thoại OpenFileDialog trên STA Thread (Bắt buộc cho Console)
+                            Thread t = new Thread((ThreadStart)(() => {
+                                // Tạo Form ảo để ép Dialog nổi lên trên cùng (TopMost)
+                                Form dummy = new Form() { TopMost = true, Top = -10000 }; 
+                                
+                                using (OpenFileDialog ofd = new OpenFileDialog())
+                                {
+                                    ofd.Title = "Chọn file Project TIA Portal";
+                                    // Lọc file TIA Portal theo mọi phiên bản (.ap15, .ap16, .ap17... đến .ap20)
+                                    ofd.Filter = "TIA Portal Project (*.ap*)|*.ap*"; 
+                                    ofd.RestoreDirectory = true;
+
+                                    if (ofd.ShowDialog(dummy) == DialogResult.OK)
+                                    {
+                                        path = ofd.FileName;
+                                    }
+                                }
+                            }));
+
+                            t.SetApartmentState(ApartmentState.STA);
+                            t.Start();
+                            t.Join(); // Đợi người dùng chọn file xong
+
+                            // Kiểm tra nếu người dùng bấm Cancel
+                            if (string.IsNullOrEmpty(path))
                             {
-                                _currentProjectName = Path.GetFileNameWithoutExtension(path);
-                                ConsoleUI.PrintSuccess("Project Opened!");
-                                currentState = AppState.TIA_Processing;
+                                ConsoleUI.PrintError("Operation cancelled. No project selected.");
+                                Console.ReadKey();
                             }
-                            else ConsoleUI.PrintError("Failed to open project.");
-                            Console.ReadKey();
-                        }
+                            else
+                            {
+                                Console.WriteLine($"\nSelected: {Path.GetFileName(path)}");
+                                ConsoleUI.PrintStep("Opening Project. Please wait...");
+
+                                // Gọi hàm mở Project của bạn
+                                if (_tiaEngine.CreateTIAproject(path, "", false))
+                                {
+                                    _currentProjectName = Path.GetFileNameWithoutExtension(path);
+                                    ConsoleUI.PrintSuccess("Project Opened Successfully!");
+                                    currentState = AppState.TIA_Processing;
+                                }
+                                else 
+                                {
+                                    ConsoleUI.PrintError("Failed to open project.");
+                                }
+                                Console.ReadKey();
+                            }
+}
                         else if (tiaMenuChoice.Contains("3. Connect"))
                         {
                             ConsoleUI.PrintStep("Connecting...");
@@ -219,7 +260,10 @@ namespace Middleware_console
                             "10. Run PLC",
                             "11. Stop PLC",
                             "12. CHECK CONNECTION (Test Online)",
-                            "13. Update Firmware"
+                            "13. Update Firmware",
+                            "14. Update WinCC Unified Runtime (COMING SOON)",
+                            "15. Setup HMI-PLC Connection (Unified)",
+                            "16. Create HMI Tag (WinCC Unified)",
                             
                         });
 
@@ -385,6 +429,20 @@ namespace Middleware_console
                         Console.WriteLine("\nPress any key to continue...");
                         Console.ReadKey();
                     }
+                    else if (procChoice.Contains("14."))
+                    {
+                           HandleJsonDrawing();
+                    }
+                    else if (procChoice.Contains("15."))
+                    {
+                           SetupHmiConnection();
+                           
+                    }    
+                    else if (procChoice.Contains("16."))
+                    {
+                           ImportTagsMenu();
+                           
+                    }       
                         break;
                 }
             }
@@ -459,6 +517,7 @@ namespace Middleware_console
             {
                 ConsoleUI.PrintStep($"Creating device...");
                 _tiaEngine.CreateDev(devName, typeIdentifier, ip, "");
+                
                 ConsoleUI.PrintSuccess($"Device {devName} created successfully.");
                 
                 // Cập nhật Header
@@ -469,6 +528,95 @@ namespace Middleware_console
             catch (Exception ex) { ConsoleUI.PrintError($"Create Failed: {ex.Message}"); }
             
             Console.WriteLine("Press any key to return...");
+            Console.ReadKey();
+        }
+        private static async void HandleJsonDrawing()
+        {
+            Console.Clear();
+            ConsoleUI.PrintHeader("WINCC UNIFIED JSON GENERATOR");
+
+            // 1. Kiểm tra kết nối
+            if (!_tiaEngine.IsConnected)
+            {
+                ConsoleUI.PrintError("Please connect to TIA instance first!");
+                Console.WriteLine("Press any key to return...");
+                Console.ReadKey();
+                return;
+            }
+
+            // 2. Chọn HMI (Tự động lấy danh sách Unified)
+            Console.WriteLine("\n--- Step 1: Select Target Unified HMI ---");
+            var devices = _tiaEngine.GetPlcList();
+            
+            if (devices.Count == 0)
+            {
+                ConsoleUI.PrintError("No Unified HMI found in the project.");
+                return;
+            }
+
+            string selectedDevice = ConsoleUI.SelectOption("Choose HMI Device:", devices.ToArray());
+            if (string.IsNullOrEmpty(selectedDevice)) return;
+
+            Console.WriteLine($"\nSelected Device: {selectedDevice}");
+
+            // 3. Mở hộp thoại chọn file JSON
+            Console.WriteLine("\n--- Step 2: Select JSON File ---");
+            Console.WriteLine("Opening File Dialog... (Check Taskbar if hidden)");
+
+            string filePath = "";
+            
+            // STA Thread cho OpenFileDialog
+            Thread t = new Thread((ThreadStart)(() => {
+                Form dummy = new Form() { TopMost = true, Top = -10000 }; 
+                using (OpenFileDialog ofd = new OpenFileDialog())
+                {
+                    ofd.Title = "Chọn file JSON cho WinCC Unified";
+                    ofd.Filter = "JSON Files (*.json)|*.json";
+                    ofd.RestoreDirectory = true;
+
+                    if (ofd.ShowDialog(dummy) == DialogResult.OK)
+                    {
+                        filePath = ofd.FileName;
+                    }
+                }
+            }));
+            
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            t.Join();
+
+            if (string.IsNullOrEmpty(filePath))
+            {
+                ConsoleUI.PrintError("No file selected.");
+                return;
+            }
+
+            ConsoleUI.PrintSuccess($"Selected File: {Path.GetFileName(filePath)}");
+
+            // 4. Xử lý và Vẽ
+            try
+            {
+                Console.WriteLine("\nProcessing...");
+                string jsonContent = File.ReadAllText(filePath);
+                ScadaScreenModel screenData = JsonConvert.DeserializeObject<ScadaScreenModel>(jsonContent);
+
+                if (screenData == null) throw new Exception("File JSON không đúng định dạng (Data is null).");
+
+                ConsoleUI.PrintStep($"DRAWING TO WINCC UNIFIED '{selectedDevice}'...");
+
+                // GỌI ĐÚNG HÀM CỦA UNIFIED
+                await Task.Run(() => { 
+                    _tiaEngine.GenerateScadaScreenFromData(selectedDevice, screenData); 
+                });
+
+                ConsoleUI.PrintSuccess($"Đã tạo xong màn hình '{screenData.ScreenName}' cho WinCC Unified!");
+            }
+            catch (Exception ex)
+            {
+                ConsoleUI.PrintError($"Lỗi: {ex.Message}");
+            }
+
+            Console.WriteLine("\nPress any key to return...");
             Console.ReadKey();
         }
 
@@ -503,6 +651,58 @@ namespace Middleware_console
             
             Console.ReadKey();
         }
+        // Giả sử đây là một phần trong Navigator.cs của bạn
+        private static void SetupHmiConnection() 
+        {
+            Console.WriteLine("\n--- THIẾT LẬP KẾT NỐI (TẠO & SỬA LỒNG GHÉP) ---");
+            
+            Console.Write("Nhập tên HMI(PC-System_1):  ");
+            string hmi = Console.ReadLine();
+            
+            Console.Write("Nhập IP HMI(192.168.0.2): ");
+            string hmiIp = Console.ReadLine();
+            
+            Console.Write("Nhập IP PLC(192.168.1.251): ");
+            string plcIp = Console.ReadLine();
+
+            // Chạy hàm lồng ghép để tránh lỗi format khi tạo mới
+            string result = _tiaEngine.CreateUnifiedConnectionCombined(hmi, hmiIp, plcIp, "Connection_1");
+            ConsoleUI.PrintResult(result);                      
+            Console.WriteLine("\nPress any key to return...");
+            Console.ReadKey();
+        }
+
+       private static void ImportTagsMenu()
+{
+    Console.WriteLine("\n--- NẠP HMI TAGS TỪ FILE CSV (CHỌN FILE) ---");
+    Console.Write("Nhập tên HMI (PC-System_1): ");
+    string hmi = Console.ReadLine();
+
+    // Khởi tạo và ép luồng chạy Dialog
+    Thread t = new Thread(() => {
+        using (OpenFileDialog openFileDialog = new OpenFileDialog())
+        {
+            openFileDialog.Title = "Chọn file danh sách HMI Tags";
+            openFileDialog.Filter = "CSV files (*.csv)|*.csv";
+            
+            // Cửa sổ sẽ hiện lên trên cùng (TopMost)
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                string filePath = openFileDialog.FileName;
+                // Trả kết quả về luồng chính để Engine xử lý
+                _tiaEngine.ImportHmiTagsFromCsv(hmi, filePath);
+            }
+        }
+    });
+
+    t.SetApartmentState(ApartmentState.STA); // Thiết lập chế độ STA cho luồng mới
+    t.Start();
+    t.Join(); // Đợi luồng chọn file kết thúc mới chạy tiếp Menu
+    Console.WriteLine("\nPress any key to return...");
+    Console.ReadKey();
+}
+
+
 
         // --- AI LOGIC (GIỮ NGUYÊN) ---
         static async Task ProcessAI(string userPrompt, string mode)

@@ -13,5 +13,15 @@
     "Name": "S7-1500 CPU 1512C-1 PN",
     "OrderNumber": "6ES7 512-1CK01-0AB0",
     "Version": "V2.8"
+  },
+  {
+    "Name": "MT700 Unified Comfort Panel",
+    "OrderNumber": "6AV2 128-3GB06-0AX1",
+    "Firmware": "20.0.0.0"
+  },
+  {
+    "Name": "Simatic WinCC Unified PC",
+    "OrderNumber": "6AV2 155-xxxxx-xxxx",
+    "Firmware": "20.0.0.0"
   }
 ]
