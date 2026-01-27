@@ -65,12 +65,11 @@ namespace Middleware_console
         private static string _selectedFirmware = "Unknown";
         private static string _selectedDeviceIp = "Unknown";
 
-        [STAThread]
+       
         static async Task Main(string[] args)
         {
             // Config TLS cho AI
             System.Net.ServicePointManager.SecurityProtocol = System.Net.SecurityProtocolType.Tls12;
-            Console.OutputEncoding = System.Text.Encoding.UTF8;
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
             AppState currentState = AppState.MainMenu;
@@ -90,7 +89,7 @@ namespace Middleware_console
                         string choice = ConsoleUI.SelectOption("Select Module:", new[] {
                             "AI Code Generator",
                             "TIA Portal Automation",
-                            "Exit"
+                            "Exit [ESC]"
                         });
 
                         if (choice.Contains("AI")) currentState = AppState.AI_Menu;
@@ -109,7 +108,7 @@ namespace Middleware_console
                             "FBD - Function Block Diagram (.txt)",
                             "LAD - Ladder (.txt)",
                             "SCADA Layout (WinCC Unified JSON)",
-                            "Back to Main Menu"
+                            "Back to Main Menu [ESC]"
                         });
 
                         if (aiChoice.Contains("Back")) currentState = AppState.MainMenu;
@@ -126,7 +125,23 @@ namespace Middleware_console
 
                     case AppState.AI_InputLogic:
                         ConsoleUI.PrintHeader($"INPUT LOGIC FOR: {_currentAiMode}");
+                        
+                        // Hướng dẫn User
+                        Console.ForegroundColor = ConsoleColor.DarkGray;
+                        Console.WriteLine("Commands: Type '/clear' to delete history & start fresh.");
+                        Console.ResetColor();
+
                         string userPrompt = ConsoleUI.GetMultiLineInput("Enter requirements");
+
+                        // XỬ LÝ LỆNH /CLEAR
+                        if (userPrompt != null && userPrompt.Trim().ToLower() == "/clear")
+                        {
+                            //_aiCore.ClearSession();
+                            Console.WriteLine("Press any key to continue...");
+                            Console.ReadKey();
+                            break; 
+                        }
+
                         ConsoleUI.PrintStep("Ready to send request to Gemini...");
                         Console.WriteLine("Press [ENTER] to confirm, [ESC] to cancel.");
                         if (Console.ReadKey().Key == ConsoleKey.Escape) currentState = AppState.AI_Menu;
@@ -134,10 +149,9 @@ namespace Middleware_console
                         {
                             currentState = AppState.AI_Processing;
                             await _aiCore.ProcessAI(userPrompt, _currentAiMode);
-                            currentState = AppState.AI_Menu;
+                            currentState = AppState.AI_Menu; // Quay về menu sau khi xong
                         }
                         break;
-
                     // =================================================================================
                     // TIA MODULE - MENU
                     // =================================================================================
@@ -152,7 +166,7 @@ namespace Middleware_console
                             "Connect to Running TIA",
                             "Close TIA Portal",
                             "Go to Operations (Hardware/Software)",
-                            "Back to Main Menu"
+                            "Back to Main Menu [ESC]"
                         });
 
                         if (menuAction.Contains("Back")) currentState = AppState.MainMenu;
@@ -201,7 +215,7 @@ namespace Middleware_console
                             "Compile (HW/SW)",
                             "Download to Device",
                             "Save Project",
-                            "Back to TIA Menu"
+                            "Back to TIA Menu [ESC]"
                         });
 
                         if (procAction.Contains("Back")) currentState = AppState.TIA_Menu;

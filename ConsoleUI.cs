@@ -76,7 +76,7 @@ namespace Middleware_console
         }
 
         // --- 2. MÔ PHỎNG COMBO BOX (Menu chọn số) ---
-        public static string SelectOption(string prompt, string[] options, bool allowEsc = false)
+        public static string SelectOption(string prompt, string[] options, bool allowCancel = false)
         {
             Console.WriteLine(prompt);
             for (int i = 0; i < options.Length; i++)
@@ -84,27 +84,47 @@ namespace Middleware_console
                 Console.WriteLine($"   [{i + 1}] {options[i]}");
             }
 
+            // Logic hiển thị hướng dẫn
+            /*
+            if (allowCancel) 
+                Console.WriteLine("   [ESC] Cancel (Return null)");
+            else 
+                Console.WriteLine("   [ESC] Back/Exit (Auto-select last option)");
+            */
             while (true)
             {
-                Console.Write("   Your choice (number): ");
-                
-                // SỬA: Dùng hàm đọc phím thay vì ReadLine
+                Console.Write("   Your choice: ");
                 string input = ReadInputWithEsc();
 
-                if (input == null && allowEsc) return null;
+                // --- XỬ LÝ ESC ---
+                if (input == null)
+                {
+                    if (allowCancel)
+                    {
+                        // Dùng cho các menu phụ (như chọn PLC Family) cần hủy bỏ thao tác
+                        return null; 
+                    }
+                    else
+                    {
+                        // Dùng cho Menu chính -> Tự động chọn mục cuối
+                        string autoBack = options[options.Length - 1];
+                        Console.WriteLine();
+                        Console.ForegroundColor = ConsoleColor.DarkGray;
+                        Console.WriteLine($"   [ESC] -> Auto-selected: {autoBack}");
+                        Console.ResetColor();
+                        return autoBack;
+                    }
+                }
 
-                if (input == null && !allowEsc) continue;
-
+                // Xử lý nhập số bình thường
                 if (int.TryParse(input, out int choice) && choice > 0 && choice <= options.Length)
                 {
                     string selected = options[choice - 1];
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
-                    Console.WriteLine($"   -> Selected: {selected}");
-                    Console.ResetColor();
+                    // Console.WriteLine($"   -> Selected: {selected}"); // Có thể bỏ dòng này cho gọn
                     return selected;
                 }
-
-                PrintError("Invalid selection. Please try again.");
+                
+                PrintError("Invalid number.");
             }
         }
 
@@ -138,16 +158,10 @@ namespace Middleware_console
         {
             Console.WriteLine($"{prompt} (Type 'END' on a new line to finish, ESC to Cancel):");
             Console.ForegroundColor = ConsoleColor.White;
-
             StringBuilder sb = new StringBuilder();
-            
-            // Lưu ý: Logic nhập nhiều dòng phức tạp hơn với ESC, 
-            // ở đây ta giữ đơn giản: Nếu dòng đầu tiên ấn ESC -> Hủy.
             while (true)
             {
                 Console.Write("   > ");
-                // Ở đây vẫn dùng ReadLine cho đơn giản, nếu bạn muốn ESC thoát ngay thì cần viết lại logic KeyChar phức tạp hơn
-                // Tạm thời giữ nguyên hoặc dùng ReadInputWithEsc cho từng dòng
                 string line = ReadInputWithEsc(); 
 
                 if (line == null) return null; // ESC

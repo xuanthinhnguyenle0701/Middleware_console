@@ -6,25 +6,32 @@ using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Threading; // Thêm để dùng Thread.Sleep
+using System.Threading;
 
 namespace Middleware_console
 {
     public class GeminiCore
     {
         private const string GeminiApiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + Secrets.ApiKey;
-
+        private List<ChatContent> _chatHistory;
+        private const int MaxHistoryTurns = 10;
         private Dictionary<string, string> promptTemplates = new Dictionary<string, string>();
 
         public GeminiCore()
         {
             LoadPromptTemplates();
+            _chatHistory = HistoryManager.Load();
+            
+            if (_chatHistory.Count > 0)
+            {
+                ConsoleUI.PrintSuccess($"[Resumed] Loaded {_chatHistory.Count} messages from history.");
+            }
         }
+        
 
         // --- 1. Load Templates ---
         private void LoadPromptTemplates()
         {
-            // (Giữ nguyên code cũ của bạn đoạn này)
             string filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PromptTemplates.json");
             try
             {
@@ -44,7 +51,6 @@ namespace Middleware_console
                         promptTemplates.Add(template.key, fullPrompt);
                     }
                 }
-                // Console.WriteLine($"[SYSTEM] Loaded {promptTemplates.Count} templates successfully."); // Tắt bớt log cho gọn
             }
             catch (Exception ex)
             {
@@ -55,7 +61,6 @@ namespace Middleware_console
         // --- 2. Build Prompt ---
         public string BuildPlcPrompt(string chuyenMuc, string hangPLC, string loaiPLC, string loaiKhoi, string ngonNgu, string yeuCauLogic, string userTagsContent)
         {
-            // (Giữ nguyên code cũ của bạn đoạn này)
             string key = "";
             if (chuyenMuc == "PLC Programming")
             {
@@ -178,7 +183,6 @@ namespace Middleware_console
         // --- 4. Save File ---
         public string SaveScriptToFile(string scriptContent, string chuyenMuc, string ngonNgu)
         {
-            // (Giữ nguyên code cũ của bạn đoạn này)
             try
             {
                 string name = "Code";
@@ -216,9 +220,7 @@ namespace Middleware_console
             Console.ResetColor();
         }
 
-        // ==================================================================================
-        // --- 5. HÀM PROCESS AI (ĐƯỢC CHUYỂN TỪ NAVIGATOR VÀO ĐÂY) ---
-        // ==================================================================================
+        // 5. AI processing flow
         public async Task ProcessAI(string userPrompt, string mode)
         {
             try 
@@ -249,13 +251,9 @@ namespace Middleware_console
                     lang = "LAD";
                 }
 
-                // 2. Build Prompt (Gọi trực tiếp hàm trong class này)
-                // Giả sử Brand/PLC Type mặc định là Siemens S7-1500
-                string fullPrompt = this.BuildPlcPrompt(category, "Siemens", "S7-1500", blockType, lang, userPrompt, "");
+                string fullPrompt = BuildPlcPrompt(category, "Siemens", "S7-1500", blockType, lang, userPrompt, "");
 
-                // 3. Gọi API & Hiển thị Spinner
-                // Lưu ý: Cần đảm bảo ConsoleUI là public static để gọi được từ đây
-                var task = this.GenerateScriptFromGemini(fullPrompt);
+                var task = GenerateScriptFromGemini(fullPrompt);
                 
                 // Gọi Spinner từ ConsoleUI
                 await ConsoleUI.ShowSpinner(task); 
@@ -268,7 +266,7 @@ namespace Middleware_console
                     ConsoleUI.PrintSuccess("Code generated successfully!");
 
                     // 5. Lưu file
-                    string savedPath = this.SaveScriptToFile(code, category, lang);
+                    string savedPath = SaveScriptToFile(code, category, lang);
 
                     if (!string.IsNullOrEmpty(savedPath))
                     {
@@ -311,4 +309,10 @@ namespace Middleware_console
     {
         public System.Collections.Generic.List<PromptTemplate> templates { get; set; }
     }
+    public class ChatContent
+    {
+        public string role { get; set; }
+        public List<ChatPart> parts { get; set; }
+    }
+    public class ChatPart { public string text { get; set; } }
 }

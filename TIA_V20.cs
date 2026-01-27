@@ -197,7 +197,7 @@ namespace Middleware_console
             }
             catch (Exception ex)
             {
-                // Ghi log lỗi nếu cần
+                ConsoleUI.PrintError(ex.Message);
             }
         }
         #endregion
@@ -1045,7 +1045,7 @@ namespace Middleware_console
                     }
                     catch (Exception ex)
                     {
-                        // Log lỗi nếu cần thiết
+                        ConsoleUI.PrintError($"Failed to import block from {file}: {ex.Message}");
                     }
                 }
                 foreach (var d in done) blockFiles.Remove(d);
