@@ -20,6 +20,11 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using Siemens.Engineering.Library.MasterCopies;
+using Siemens.Engineering.Library;
+using System.Xml.Linq;
+using Siemens.Engineering.HmiUnified.UI.Screens;
+using System.Windows.Forms;
 
 
 
@@ -433,6 +438,7 @@ namespace Middleware_console
             if (hmiTarget == null) throw new Exception($"Device '{deviceName}' not found.");
 
             Console.WriteLine($">> [Unified Mode] Processing Screen: {screenData.ScreenName}...");
+                        
 
             // 2. [FIX LỖI TẠI ĐÂY] Lấy danh sách màn hình tùy theo loại thiết bị
             dynamic screens = null;
@@ -449,10 +455,14 @@ namespace Middleware_console
 
             if (screens == null) throw new Exception("Cannot locate the Screens container in this device.");
 
-            // Xóa màn cũ (nếu có)
-            foreach (dynamic s in (System.Collections.IEnumerable)screens)
+           // ĐOẠN MỚI: Tìm chính xác đối tượng cần xóa trước
+            var screenList = ((System.Collections.IEnumerable)screens).Cast<dynamic>().ToList();
+            var existingScreen = screenList.FirstOrDefault(s => s.Name == screenData.ScreenName);
+
+            if (existingScreen != null)
             {
-                try { if (s.Name == screenData.ScreenName) s.Delete(); } catch { }
+                Console.WriteLine($"      [INFO] Xóa màn hình cũ: {screenData.ScreenName}");
+                existingScreen.Delete(); 
             }
 
             IEngineeringObject currentScreen = null;
@@ -465,67 +475,273 @@ namespace Middleware_console
             catch (Exception ex) { throw new Exception($"Failed to create Unified Screen. {ex.Message}"); }
 
             // 3. Lấy ScreenItems
-            IEngineeringComposition screenItemsComp = (IEngineeringComposition)currentScreen.GetComposition("ScreenItems");
-            if (screenItemsComp == null) throw new Exception("Cannot access ScreenItems.");
+            dynamic unifiedScreen = currentScreen; 
+            dynamic screenItems = unifiedScreen.ScreenItems; 
 
-            // 4. Gộp Items
+            if (screenItems == null) throw new Exception("Cannot access ScreenItems.");
+
+            // 4. Gộp Items (Giữ nguyên logic của bạn)
             List<ScadaItemModel> allItems = new List<ScadaItemModel>();
             if (screenData.Items != null) allItems.AddRange(screenData.Items);
             if (screenData.Layers != null)
                 foreach (var l in screenData.Layers) 
-                    if (l.Items != null) allItems.AddRange(l.Items);
+                    if (l.Items != null) allItems.AddRange(l.Items);            
 
-            // 5. Vẽ
-            BuildUnifiedItemsRecursive(screenItemsComp, allItems);
+            // 5. Vẽ - TRUYỀN BIẾN screenItems (đã là dynamic) VÀO
+            // Đừng truyền 'screenItemsComp' vì nó là IEngineeringComposition (bị khóa quyền)
+            BuildUnifiedItemsRecursive(screenItems, allItems);
+
             Console.WriteLine("[SUCCESS] WinCC Unified Screen Generated Successfully!");
         }
 
-        private void BuildUnifiedItemsRecursive(IEngineeringComposition composition, List<ScadaItemModel> items)
-        {
-            dynamic dynComp = composition;
+      
 
-            foreach (var item in items)
-            {
-                if (item.EnableCreation.HasValue && !item.EnableCreation.Value) continue;
 
-                try
-                {
-                    Console.WriteLine($"   + [Unified] Creating {item.Type}: {item.Name}");
-                    
-                    // Unified dùng Type Reflection chuẩn của Siemens
-                    string typeNamespace = "Siemens.Engineering.Hmi.Screen.";
-                    string typeName = "Button"; 
-                    switch (item.Type)
-                    {
-                        case "Circle": typeName = "Circle"; break;
-                        case "Rectangle": typeName = "Rectangle"; break;
-                        case "Button": typeName = "Button"; break;
-                        case "Text": typeName = "TextBox"; break; 
-                        case "IOField": typeName = "IOField"; break;
-                    }
+// Hàm vẽ đệ quy cho WinCC Unified (Đã chỉnh sửa để dùng dynamic và hỗ trợ cả Widget lẫn Graphic)
+private void BuildUnifiedItemsRecursive(dynamic composition, List<ScadaItemModel> items)
+{
+    var createdObjects = new Dictionary<string, dynamic>();
+    Console.WriteLine("\n>> [GIAI ĐOẠN 1] Dựng hình & Gán tọa độ thực...");
 
-                    Type itemType = GetSiemensType(typeNamespace + typeName);
-                    if (itemType == null) continue;
-
-                    // Vẽ Item
-                    dynamic newItem = dynComp.Create(itemType, item.Name);
-
-                    // Set thuộc tính
-                    if (item.Properties != null)
-                    {
-                        foreach (var prop in item.Properties)
-                        {
-                            SetPropertyUnified((IEngineeringObject)newItem, prop.Key, prop.Value);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"     [Error] {item.Name}: {ex.Message}");
-                }
-            }
+    // --- TRONG GIAI ĐOẠN 1: DỰNG HÌNH & ĐỊNH VỊ ---
+foreach (var item in items) {
+    try {
+        dynamic newItem = null;
+        if (item.Properties.ContainsKey("LibraryPath")) {
+            CreateDynamicWidget(composition, item.Type, item.Name, item.Properties);
+            System.Threading.Thread.Sleep(300);
+            newItem = composition.Find(item.Name);
+        } else {
+            string typeId = item.Type.StartsWith("Hmi") ? item.Type : "Hmi" + item.Type;
+            newItem = CreateBaseItem(composition, typeId, item.Name);
         }
 
+        if (newItem == null) continue;
+
+        // A. ĐỊNH VỊ TỌA ĐỘ (Dùng SetAttribute để tránh lỗi int/uint)
+        try {
+            if (item.Properties.ContainsKey("Left")) newItem.SetAttribute("Left", Convert.ToInt32(item.Properties["Left"]));
+            if (item.Properties.ContainsKey("Top")) newItem.SetAttribute("Top", Convert.ToInt32(item.Properties["Top"]));
+            if (item.Properties.ContainsKey("Width")) newItem.SetAttribute("Width", Convert.ToUInt32(item.Properties["Width"]));
+            if (item.Properties.ContainsKey("Height")) newItem.SetAttribute("Height", Convert.ToUInt32(item.Properties["Height"]));
+            Console.WriteLine($"      [POS OK] {item.Name} -> ({item.Properties["Left"]}, {item.Properties["Top"]})");
+        } catch { }
+
+        // B. GÁN CHỮ CHO NÚT BẤM (Sửa lỗi CS0103)    
+        
+        if (item.Type.Contains("Button") && item.Properties.ContainsKey("Text")) 
+        {
+            string rawContent = item.Properties["Text"].ToString();
+            // Bắt buộc phải bọc trong thẻ HTML theo đúng bản siêu âm đã soi thấy
+            string formattedContent = $"<body><p>{rawContent}</p></body>"; 
+            
+            try 
+            {
+                // Truy cập sâu vào đúng phần tử Items[0]
+                dynamic textItem = newItem.Text.Items[0];
+                
+                // Sử dụng SetAttribute để nạp chuỗi đã format
+                textItem.SetAttribute("Text", formattedContent);
+                
+                Console.WriteLine($"      [TEXT OK] {item.Name} -> {rawContent}");
+            } 
+            catch (Exception ex) 
+            {
+                Console.WriteLine($"      [!] Lỗi định dạng Text cho {item.Name}: {ex.Message}");
+            }
+        }
+        createdObjects.Add(item.Name, newItem);
+    } catch { }
+}
+
+    Console.WriteLine("\n>> [GIAI ĐOẠN 2] Nạp linh hồn THẬT (Bắt đầu gỡ rối Widget)...");
+
+    foreach (var item in items)
+    {
+        if (!createdObjects.ContainsKey(item.Name)) {
+            Console.WriteLine($"      [!] Bỏ qua {item.Name}: Không tìm thấy xác trong Dictionary.");
+            continue;
+        }
+
+        dynamic dynItem = createdObjects[item.Name];
+        
+        // Trích xuất Tag
+        string tag = item.Properties.ContainsKey("PressTag") ? item.Properties["PressTag"].ToString() :
+                     item.Properties.ContainsKey("LevelTag") ? item.Properties["LevelTag"].ToString() :
+                     item.Properties.ContainsKey("StatusTag") ? item.Properties["StatusTag"].ToString() : "";
+
+        // Bẫy Log 1: Kiểm tra xem JSON có Tag không
+        if (string.IsNullOrEmpty(tag)) {
+            Console.WriteLine($"      [?] {item.Name}: Không có Tag trong JSON (Bỏ qua nạp linh hồn).");
+            continue;
+        }
+
+        // --- PHÂN LUỒNG XỬ LÝ ---
+
+        // 1. NHÓM NÚT BẤM (Đã OK)
+        if (item.Type.Contains("Button")) {
+            ProcessButtonScripts(dynItem, item.Name, tag);
+        }
+        // 2. NHÓM CẢM BIẾN (Đã OK)
+        else if (item.Type.Contains("Rectangle")) {
+            BindTagToBasic(dynItem, tag, "BackColor");
+        }
+        // 3. NHÓM DYNAMIC WIDGET (Bồn, Van, Bơm)
+        else if (item.Properties.ContainsKey("LibraryPath")) {
+            string targetProp = item.Type.Contains("Tank") ? "FillLevelColor" : "BasicColor";
+            bool foundPort = false;
+
+            try {
+                foreach (dynamic m in dynItem.Interface) {
+                    if (m.PropertyName == targetProp) {
+                        foundPort = true;
+                        if (item.Type.Contains("Motor")) BindScriptToWidget(m, tag);
+                        else BindTagToWidget(m, tag);
+                        break;
+                    }
+                }
+                // Bẫy Log 2: Nếu duyệt hết Interface mà không thấy cổng FillLevelColor/BasicColor
+                if (!foundPort) {
+                    Console.WriteLine($"      [!] {item.Name}: Không tìm thấy cổng '{targetProp}' trong Interface.");
+                }
+            } catch (Exception ex) {
+                Console.WriteLine($"      [!] {item.Name}: Lỗi truy cập Interface: {ex.Message}");
+            }
+        }
+        else {
+            Console.WriteLine($"      [?] {item.Name}: Vật thể không thuộc nhóm Widget/Button/Rectangle.");
+        }
+    }
+}
+
+
+// 1. Dành cho Bồn, Van (Widget Member) - Không tham số
+public void BindTagToWidget(dynamic member, string tagName) {
+    try {
+        dynamic dyns = member.Dynamizations;
+        // Tìm hàm Create(string propertyName) có 1 tham số
+        var method = ((object)dyns).GetType().GetMethods()
+            .FirstOrDefault(m => m.Name == "Create" && m.IsGenericMethod && m.GetParameters().Length == 1);
+        
+        // SỬA LỖI .Many() thành .SelectMany()
+        Type tagType = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => a.GetTypes())
+            .FirstOrDefault(t => t.Name == "TagDynamization");
+
+        if (method != null && tagType != null) {
+            // Thực thi nạp Tag vào đúng cổng PropertyName của Member
+            var tagDyn = method.MakeGenericMethod(tagType).Invoke(dyns, new object[] { member.PropertyName });
+            ((dynamic)tagDyn).Tag = tagName; 
+            Console.WriteLine($"      => [THẬT WIDGET] {member.PropertyName} -> {tagName}");
+        }
+    } catch (Exception ex) { 
+        Console.WriteLine($"      [!] Lỗi Widget Tag: {ex.Message}"); 
+    }
+}
+// 2. Dành cho Bơm (Nạp Script) - Không tham số
+public void BindScriptToWidget(dynamic member, string tagName) {
+    try {
+        dynamic dyns = member.Dynamizations;
+        var method = ((object)dyns).GetType().GetMethods()
+            .FirstOrDefault(m => m.Name == "Create" && m.IsGenericMethod && m.GetParameters().Length == 1);
+
+        // SỬA LỖI .Many() thành .SelectMany()
+        Type scriptType = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => a.GetTypes())
+            .FirstOrDefault(t => t.Name == "ScriptDynamization");
+
+        if (method != null && scriptType != null) {
+            var scriptDyn = method.MakeGenericMethod(scriptType).Invoke(dyns, new object[] { member.PropertyName });
+            
+            // Nạp mã JS (Dùng ScriptCode vì bản siêu âm của Otis báo thuộc tính này chạy tốt)
+            ((dynamic)scriptDyn).ScriptCode = $@"var status = Tags(""{tagName}"").Read(); 
+return status ? HMIRuntime.Math.RGB(135, 190, 50) : HMIRuntime.Math.RGB(178, 34, 34);";
+            
+            Console.WriteLine($"      => [THẬT WIDGET SCRIPT] {member.PropertyName} -> {tagName}");
+        }
+    } catch (Exception ex) { 
+        Console.WriteLine($"      [!] Lỗi Widget Script: {ex.Message}"); 
+    }
+}
+// 3. Dành cho Nút bấm, Cảm biến (Basic Object) - Phải có PropertyName
+public void BindTagToBasic(dynamic item, string tagName, string propName) {
+    try {
+        var method = ((object)item.Dynamizations).GetType().GetMethods().FirstOrDefault(m => m.Name == "Create" && m.IsGenericMethod && m.GetParameters().Length == 1);
+        Type tagType = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => a.GetTypes()).FirstOrDefault(t => t.Name == "TagDynamization");
+        if (method != null && tagType != null) {
+            var tagDyn = method.MakeGenericMethod(tagType).Invoke(item.Dynamizations, new object[] { propName });
+            ((dynamic)tagDyn).Tag = tagName;
+            Console.WriteLine($"      => [THẬT] Basic Tag: {tagName}");
+        }
+    } catch { }
+}
+
+private void ProcessButtonScripts(dynamic dynItem, string itemName, string tag) {
+    Type enumType = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => a.GetTypes()).FirstOrDefault(t => t.Name == "HmiButtonEventType");
+    if (enumType == null) return;
+
+    foreach (var evName in new[] { "KeyDown", "KeyUp" }) {
+        var evEnum = Enum.Parse(enumType, evName);
+        dynamic handler = null;
+        foreach (dynamic h in dynItem.EventHandlers) if (h.EventType.ToString() == evName) { handler = h; break; }
+
+        if (handler == null) {
+            var method = dynItem.EventHandlers.GetType().GetMethod("Create", new Type[] { enumType });
+            handler = method.Invoke(dynItem.EventHandlers, new object[] { evEnum });
+        }
+        int val = (evName == "KeyDown") ? 1 : 0;
+        // NẠP VÀO ScriptCode (Đã siêu âm thấy cổng này!)
+        handler.Script.ScriptCode = $"Tags(\"{tag}\").Write({val});";
+        Console.WriteLine($"      => [THẬT] {itemName} {evName} -> {tag}");
+    }
+}
+
+// HÀM PHỤ: TẠO VẬT THỂ
+private IEngineeringObject CreateBaseItem(dynamic composition, string typeName, string name)
+{
+    var method = ((object)composition).GetType().GetMethods().FirstOrDefault(m => m.Name == "Create" && m.IsGenericMethod);
+    Type targetType = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => a.GetTypes()).FirstOrDefault(t => t.Name == typeName);
+    return (IEngineeringObject)method.MakeGenericMethod(targetType).Invoke(composition, new object[] { name });
+}
+
+// HÀM PHỤ: CẬP NHẬT ATTRIBUTE (Xử lý màu sắc và tọa độ)
+private void UpdateItemAttribute(IEngineeringObject item, string key, object value, string type)
+{
+    try {
+        string attr = key;
+        if (key == "Left" && type.Contains("Circle")) attr = "CenterX";
+        if (key == "Top" && type.Contains("Circle")) attr = "CenterY";
+
+        if (key == "BackColor") {
+            var rgb = value.ToString().Split(',').Select(b => byte.Parse(b.Trim())).ToArray();
+            uint color = (uint)((255 << 24) | (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]);
+            item.SetAttribute("BackColor", color);
+        } else {
+            item.SetAttribute(attr, value);
+        }
+        Console.WriteLine($"      [OK] {attr} -> {value}");
+    } catch { }
+}
+
+
+private void SetUnifiedTextWithVerifiedFormat(dynamic newItem, string propertyName, string newText)
+{
+    try 
+    {
+        dynamic mText = newItem.GetAttribute(propertyName);
+        foreach (dynamic tItem in mText.Items) 
+        {
+            // Tạo chuỗi đúng định dạng mà chúng ta vừa đọc được từ Console
+            string formattedValue = $"<body><p>{newText}</p></body>";
+            
+            // Gán lại vào thuộc tính Text của từng Item ngôn ngữ
+            tItem.SetAttribute("Text", formattedValue);
+        }
+        Console.WriteLine($"      [OK] {propertyName} -> Gán định dạng chuẩn thành công");
+    }
+    catch (Exception ex) 
+    {
+        Console.WriteLine($"      [!] Lỗi khi gán định dạng: {ex.Message}");
+    }
+}
         private void SetPropertyUnified(IEngineeringObject obj, string key, object value)
         {
             string targetProp = key;
@@ -554,9 +770,527 @@ namespace Middleware_console
             catch { }
         }
 
+        private void CreateDynamicGraphic(dynamic composition, string type, string name, dynamic properties, Siemens.Engineering.Project project)
+{
+    try
+    {
+        // 1. Đọc danh sách ảnh thực tế từ Project Graphic View
+        List<string> availableGraphics = GetProjectGraphicsNames();
+
+        // 2. SO SÁNH & CHỈNH CHO KHỚP:
+        // Tìm tấm ảnh nào trong TIA có tên CHỨA từ khóa 'type' (ví dụ: "Pump" khớp với "Pump_Red")
+        string bestMatch = availableGraphics.FirstOrDefault(g => 
+            g.IndexOf(type, StringComparison.OrdinalIgnoreCase) >= 0);
+
+        // Nếu tìm thấy tấm ảnh khớp (ví dụ tìm thấy "Pump_v2" cho type "Pump")
+        // thì ta dùng tên đó, nếu không tìm thấy gì thì mới dùng 'type' gốc
+        string finalGraphicName = !string.IsNullOrEmpty(bestMatch) ? bestMatch : type;
+
+        if (string.IsNullOrEmpty(bestMatch))
+        {
+            Console.WriteLine($"      [WARNING] Không tìm thấy ảnh nào khớp với Type '{type}'. Sẽ dùng mặc định.");
+        }
+
+        // 3. Tiến hành vẽ HmiGraphicView
+        var compositionType = ((object)composition).GetType();
+        var methodInfo = compositionType.GetMethods().FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 1);
+        Type targetType = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => a.GetTypes()).FirstOrDefault(t => t.Name == "HmiGraphicView");
+
+        if (methodInfo != null && targetType != null)
+        {
+            var newItem = (IEngineeringObject)methodInfo.MakeGenericMethod(targetType).Invoke(composition, new object[] { name });
+            if (newItem != null)
+            {
+                newItem.SetAttribute("Left", Convert.ToInt32(properties["Left"]));
+                newItem.SetAttribute("Top", Convert.ToInt32(properties["Top"]));
+                newItem.SetAttribute("Width", Convert.ToUInt32(properties["Width"]));
+                newItem.SetAttribute("Height", Convert.ToUInt32(properties["Height"]));
+
+                // GÁN TÊN ĐÃ ĐƯỢC CHỈNH CHO KHỚP
+                newItem.SetAttribute("Graphic", finalGraphicName);
+                
+                Console.WriteLine($"      [RENDER] Đã khớp '{type}' -> '{finalGraphicName}' cho đối tượng '{name}'");
+            }
+        }
+    }
+    catch (Exception ex) { Console.WriteLine($"      [ERROR] Lỗi vẽ Graphic: {ex.Message}"); }
+}
+public bool AddPngToProjectGraphics(string filePath, string graphicName)
+{
+    try
+    {
+        dynamic projectObj = _project;
+        var graphics = projectObj.Graphics;
+
+        if (graphics != null && File.Exists(filePath))
+        {
+            string directory = Path.GetDirectoryName(filePath);
+            // Tạo thư mục "files" đi kèm theo đúng định dạng export của TIA
+            string folderName = graphicName + "_files";
+            string folderPath = Path.Combine(directory, folderName);
+            if (!Directory.Exists(folderPath)) Directory.CreateDirectory(folderPath);
+
+            string safeImgName = "DefaultImageStream.png";
+            string safeImgPath = Path.Combine(folderPath, safeImgName);
+            File.Copy(filePath, safeImgPath, true);
+
+            string xmlPath = Path.Combine(directory, "import_wrapper.xml");
+            
+            // Otis nhìn kỹ cấu trúc này: Nó giống 100% file mẫu bạn gửi
+            string xmlContent = $@"<?xml version=""1.0"" encoding=""utf-8""?>
+<Document>
+  <Engineering version=""V20"" />
+  <Hmi.Globalization.MultiLingualGraphic ID=""0"">
+    <AttributeList>
+      <DefaultDithering>false</DefaultDithering>
+      <DefaultImageStream external=""path"">{folderName}\{safeImgName}</DefaultImageStream>
+      <DefaultSmoothness>false</DefaultSmoothness>
+      <Name>{graphicName}</Name>
+    </AttributeList>
+  </Hmi.Globalization.MultiLingualGraphic>
+</Document>";
+            
+            File.WriteAllText(xmlPath, xmlContent, System.Text.Encoding.UTF8);
+
+            // Nạp file XML
+            FileInfo xmlFileInfo = new FileInfo(xmlPath);
+            var methods = ((object)graphics).GetType().GetMethods().Cast<MethodInfo>();
+            var importMethod = methods.FirstOrDefault(m => m.Name == "Import" && m.GetParameters().Length == 2);
+
+            if (importMethod != null)
+            {
+                Type importOptionsType = importMethod.GetParameters()[1].ParameterType;
+                object options = Enum.ToObject(importOptionsType, 0); 
+                importMethod.Invoke(graphics, new object[] { xmlFileInfo, options });
+                
+                Console.WriteLine($"      [OK] Đã nạp thành công '{graphicName}' khớp 100% mẫu!");
+            }
+
+            // --- BỔ SUNG PHẦN DỌN DẸP RÁC TẠI ĐÂY ---
+            if (File.Exists(xmlPath)) File.Delete(xmlPath); // Xóa file XML tạm
+            
+            if (Directory.Exists(folderPath)) 
+            {
+                // Xóa thư mục tạm _files sau khi TIA đã nạp xong vào Database
+                Directory.Delete(folderPath, true); 
+            }
+            
+            return true;
+        }
+        return false;
+    }
+    catch (Exception ex)
+    {
+        string errorMsg = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+        Console.WriteLine($"      [ERROR] Lỗi nạp ảnh: {errorMsg}");
+        return false;
+    }
+}
+
+public void ImportAllImagesFromFolder(string folderPath)
+{
+    try
+    {
+        string[] files = Directory.GetFiles(folderPath, "*.png");
+        Console.WriteLine($"--- Đang nạp {files.Length} ảnh từ thư mục ---");
+
+        foreach (var file in files)
+        {
+            string name = Path.GetFileNameWithoutExtension(file);
+            // Gọi hàm AddPngViaXmlWrapper mà chúng ta vừa sửa theo mẫu "Y khuôn"
+            if (AddPngToProjectGraphics(file, name))
+            {
+                Console.WriteLine($"   [+] Đã nạp: {name}");
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"      [ERROR] Lỗi nạp hàng loạt: {ex.Message}");
+    }
+}
+
+public bool ImportGraphic(string name, string filePath)
+{
+    try
+    {
+        // Truy cập vào kho Graphics của Project qua Reflection
+        PropertyInfo graphicsProp = _project.GetType().GetProperty("Graphics");
+        var graphicsCollection = graphicsProp.GetValue(_project);
+        
+        // Gọi hàm Import(name, path, folder)
+        // Lưu ý: TIA Openness cho phép nạp trực tiếp vào root Graphics
+        MethodInfo importMethod = graphicsCollection.GetType().GetMethod("Import", new[] { typeof(string), typeof(string) });
+        if (importMethod != null)
+        {
+            importMethod.Invoke(graphicsCollection, new object[] { name, filePath });
+            return true;
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"      [!] Không thể nạp ảnh: {ex.Message}");
+    }
+    return false;
+}
+public void CreateGraphicList(string listName, List<string> graphicNames)
+{
+    try
+    {
+        dynamic software = GetHmiSoftware(); // Hàm phụ lấy HmiSoftware chúng ta đã viết
+        var graphicLists = software.GraphicLists;
+
+        string xmlPath = Path.Combine(@"C:\Capstone Project\", listName + ".xml");
+        
+        // Tạo nội dung XML cho Graphic List (Standard)
+        string entriesXml = "";
+        for (int i = 0; i < graphicNames.Count; i++)
+        {
+            entriesXml += $@"
+        <Hmi.GraphicListEntry ID=""{i + 1}"" CompositionName=""Entries"">
+          <AttributeList>1
+            <GraphicName>{graphicNames[i]}</GraphicName>
+            <Value>{i}</Value>
+          </AttributeList>
+        </Hmi.GraphicListEntry>";
+        }
+
+        string xmlContent = $@"<?xml version=""1.0"" encoding=""utf-8""?>
+<Document>
+  <Engineering version=""V20"" />
+  <Hmi.GraphicList ID=""0"">
+    <AttributeList>
+      <Name>{listName}</Name>
+      <GraphicListType>Standard</GraphicListType>
+    </AttributeList>
+    <ObjectList>
+      {entriesXml}
+    </ObjectList>
+  </Hmi.GraphicList>
+</Document>";
+
+        File.WriteAllText(xmlPath, xmlContent, System.Text.Encoding.UTF8);
+        FileInfo xmlFileInfo = new FileInfo(xmlPath);
+        
+        // Import vào GraphicLists
+        var importMethod = ((object)graphicLists).GetType().GetMethod("Import");
+        importMethod.Invoke(graphicLists, new object[] { xmlFileInfo, Enum.ToObject(importMethod.GetParameters()[1].ParameterType, 0) });
+
+        Console.WriteLine($"      [OK] Đã tạo Graphic List: {listName}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"      [ERROR] Lỗi tạo Graphic List: {ex.Message}");
+    }
+}
+
+public List<string> GetProjectGraphicsNames()
+{
+    List<string> graphicsNames = new List<string>();
+    try
+    {
+        PropertyInfo graphicsProp = _project.GetType().GetProperty("Graphics");
+        if (graphicsProp != null)
+        {
+            var items = graphicsProp.GetValue(_project) as System.Collections.IEnumerable;
+            if (items != null)
+            {
+                foreach (dynamic graphic in items) graphicsNames.Add(graphic.Name.ToString());
+            }
+        }
+    }
+    catch (Exception ex) { Console.WriteLine($"      [!] Lỗi đọc kho ảnh: {ex.Message}"); }
+    return graphicsNames;
+}
+
+// Đổi HmiScreen thành Screen để hết lỗi CS0246
+private void CreateDynamicWidget(dynamic composition, string type, string name, dynamic properties)
+{
+    try {
+        // 1. LẤY TYPE CỦA CONTAINER TỪ ASSEMBLY
+        Type targetType = AppDomain.CurrentDomain.GetAssemblies()
+            .SelectMany(a => a.GetTypes())
+            .FirstOrDefault(t => t.Name == "HmiCustomWidgetContainer");
+        
+        if (targetType == null) return;
+
+        // 2. TÌM PHƯƠNG THỨC CREATE CÓ 2 THAM SỐ (Name và TypeIdentifier)
+        var compositionType = ((object)composition).GetType();
+        var methodInfo = compositionType.GetMethods().FirstOrDefault(m => 
+            m.Name == "Create" && m.GetParameters().Length == 2);
+        
+        // 3. XÁC ĐỊNH FILE SVG CỤ THỂ (Mặc định tiền tố extended. cho V20)
+        string subType = properties.ContainsKey("SubType") ? properties["SubType"].ToString() : type;
+        string typeIdentifier = $"extended.{subType}"; 
+        
+        // 4. KHỞI TẠO ĐỐI TƯỢNG
+        var newItem = (IEngineeringObject)methodInfo.MakeGenericMethod(targetType)
+            .Invoke(composition, new object[] { name, typeIdentifier });
+
+        if (newItem != null) {
+            // 5. THIẾT LẬP TỌA ĐỘ VÀ KÍCH THƯỚC
+            newItem.SetAttribute("Left", Convert.ToInt32(properties["Left"]));
+            newItem.SetAttribute("Top", Convert.ToInt32(properties["Top"]));
+            newItem.SetAttribute("Width", Convert.ToUInt32(properties["Width"]));
+            newItem.SetAttribute("Height", Convert.ToUInt32(properties["Height"]));
+
+            // 6. NẠP THAM SỐ GIAO DIỆN (INTERFACE) DỰA THEO SVG
+            try {
+                dynamic dynItem = newItem;
+                var interfaceProps = dynItem.Properties["Miscellaneous"].Properties["Interface"].Properties;
+                
+                // A. Tham số chung: Màu vỏ
+                interfaceProps["BasicColor"].Value = properties.ContainsKey("BasicColor") ? properties["BasicColor"].ToString() : "238, 238, 238";
+
+                // B. Tham số riêng cho Tank (Mức nước)
+                if (subType.Contains("Tank")) {
+                    interfaceProps["FillLevelColor"].Value = properties.ContainsKey("FillLevelColor") ? properties["FillLevelColor"].ToString() : "0, 161, 255";
+                    interfaceProps["FillLevelValue"].Value = properties.ContainsKey("FillLevelValue") ? Convert.ToDouble(properties["FillLevelValue"]) : 0.0;
+                    interfaceProps["DisplayFillLevel"].Value = properties.ContainsKey("DisplayFillLevel") ? Convert.ToBoolean(properties["DisplayFillLevel"]) : true;
+                }
+
+                // C. Tham số riêng cho ControlValve (Màu đầu van)
+                if (subType.Contains("ControlValve")) {
+                    interfaceProps["ContrastColor"].Value = properties.ContainsKey("ContrastColor") ? properties["ContrastColor"].ToString() : "205, 205, 205";
+                }
+            } catch {
+                // Interface có thể chưa nạp kịp từ SVG khi chưa Rebuild All
+            }
+            
+            Console.WriteLine($"      [RENDER] {name} ({subType}) THÀNH CÔNG.");
+        }
+    } catch (Exception ex) {
+        Console.WriteLine($"      [LỖI]: {ex.InnerException?.Message ?? ex.Message}");
+    }
+}
+
+public void AssignMomentaryTag(string deviceName, string screenName, string itemName, string newTagName)
+{
+    try {
+        var screenItems = GetScreenItemsComposition(deviceName, screenName);
+        if (screenItems == null) return;
+
+        // Tìm vật thể bằng vòng lặp để tránh lỗi CS1061
+        dynamic targetItem = null;
+        foreach (dynamic item in screenItems) {
+            if (item.Name == itemName) {
+                targetItem = item;
+                break;
+            }
+        }
+
+        if (targetItem == null) return;
+
+        // Duyệt EventHandlers để gán cho cả Press (KeyDown) và Release (KeyUp)
+        foreach (dynamic handler in targetItem.EventHandlers) {
+            var script = handler.Script; // Đây là ScriptDynamization đã giải phẫu
+            if (script != null) {
+                string eventType = handler.EventType.ToString();
+                int val = (eventType == "KeyDown") ? 1 : 0; 
+
+                // Ghi đè mã JS chuẩn
+                script.SourceCode = $"export function {itemName}_On{eventType}(item, keyCode, modifiers) {{\n  Tags(\"{newTagName}\").Write({val});\n}}";
+                Console.WriteLine($"   [OK] {itemName} -> {eventType} gán Tag: {newTagName}");
+            }
+        }
+    } catch (Exception ex) { Console.WriteLine($"[LỖI Assign]: {ex.Message}"); }
+}
+public void ExportAllPathsFromScreen(string deviceName, string screenName, string targetObjectName)
+{
+    try {
+        var device = _project.Devices.Find(deviceName);
+        if (device == null) return;
+
+        dynamic hmiSoftware = null;
+
+        // 1. Quét thẳng vào các Item cấp 1 (ví dụ: HMI_RT_2)
+        foreach (dynamic item in device.DeviceItems) {
+            hmiSoftware = GetHmiSoftwareFromItem(item);
+            if (hmiSoftware != null) break;
+
+            // 2. Nếu không thấy, quét vào các Slot bên trong (Rack)
+            try {
+                foreach (dynamic sub in item.DeviceItems) {
+                    hmiSoftware = GetHmiSoftwareFromItem(sub);
+                    if (hmiSoftware != null) break;
+                }
+            } catch { }
+            if (hmiSoftware != null) break;
+        }
+
+        if (hmiSoftware != null) {
+            var screen = hmiSoftware.Screens.Find(screenName);
+            if (screen != null) {
+                Console.WriteLine($"\n--- 🔍 SIÊU ÂM CẤU TRÚC: {screenName} ---");
+                if (!string.IsNullOrEmpty(targetObjectName)) {
+                    var obj = screen.ScreenItems.Find(targetObjectName);
+                    if (obj != null) ScanDeep(obj);
+                } else {
+                    foreach (var obj in screen.ScreenItems) ScanDeep(obj);
+                }
+            } else {
+                Console.WriteLine($"[!] Đã thấy Software nhưng không thấy màn hình: {screenName}");
+            }
+        } else {
+            Console.WriteLine("[!] VẪN KHÔNG THẤY HMI SOFTWARE. Hãy kiểm tra tên Device có đúng là 'PC-System_1' không?");
+        }
+    } catch (Exception ex) { Console.WriteLine($"[!] Lỗi: {ex.Message}"); }
+}
+
+private dynamic GetHmiSoftwareFromItem(dynamic item) {
+    try {
+        // Cách lấy linh hồn HMI chuẩn nhất cho WinCC Unified V20
+        var softwareContainer = item.GetService<Siemens.Engineering.HW.Features.SoftwareContainer>();
+        if (softwareContainer != null) {
+            return softwareContainer.Software;
+        }
+    } catch { }
+    return null;
+}
+
+
+private void ScanDeep(dynamic obj)
+{
+    Console.WriteLine($"\n==================================================");
+    Console.WriteLine($"[SOI CHI TIẾT] Vật thể: {obj.Name}");
+    Console.WriteLine($"==================================================");
+
+    // --- CỔNG 1: QUÉT THUỘC TÍNH HỆ THỐNG & ĐỆ QUY TEXT ---
+    try {
+        Console.WriteLine($"\n[1] DANH SÁCH THUỘC TÍNH HỆ THỐNG:");
+        var type = ((object)obj).GetType();
+        var properties = type.GetProperties();
+
+        foreach (var p in properties) {
+            try {
+                if (p.CanRead) {
+                    object val = p.GetValue(obj);
+                    string n = p.Name;
+                    
+                    // Lọc các thuộc tính hình học & Text
+                    if (n.Contains("Left") || n.Contains("Top") || n.Contains("Width") || 
+                        n.Contains("Height") || n.Contains("Text") || n.Contains("Color")) {
+                        
+                        Console.WriteLine($"    => {n.PadRight(20)} | Kiểu: {p.PropertyType.Name} | Giá trị: {val}");
+
+                        // PHẪU THUẬT SÂU: Nếu thuộc tính là Text (MultilingualText), soi tiếp bên trong
+                        if (n == "Text" && val != null) {
+                            Console.WriteLine($"       --- Đang soi cấu trúc bên trong của [Text] ---");
+                            var subProps = val.GetType().GetProperties();
+                            foreach (var sp in subProps) {
+                                try {
+                                    object sVal = sp.GetValue(val);
+                                    Console.WriteLine($"          + {sp.Name.PadRight(15)}: {sVal}");
+                                    
+                                    // Nếu tìm thấy Items (Danh sách ngôn ngữ), soi phần tử đầu tiên
+                                    if (sp.Name == "Items") {
+                                        dynamic items = sVal;
+                                        if (items.Count > 0) {
+                                            Console.WriteLine($"          [!] Tìm thấy {items.Count} mục ngôn ngữ. Phần tử [0] có:");
+                                            var itemProps = ((object)items[0]).GetType().GetProperties();
+                                            foreach (var ip in itemProps) {
+                                                try { Console.WriteLine($"             > {ip.Name}: {ip.GetValue(items[0])}"); } catch { }
+                                            }
+                                        }
+                                    }
+                                } catch { }
+                            }
+                        }
+                    }
+                }
+            } catch { }
+        }
+    } catch (Exception ex) {
+        Console.WriteLine($"    [!] Lỗi quét: {ex.Message}");
+    }
+}
+
+private void AnalyzeDynamization(dynamic dyns) {
+    foreach (dynamic d in dyns) {
+        try {
+            Console.WriteLine($"      + Kiểu: {d.GetType().Name}");
+            // Dò tìm Tag hoặc ScriptCode ẩn
+            try { Console.WriteLine($"        - Tag: {d.Tag}"); } catch { }
+            try { Console.WriteLine($"        - ScriptCode: {d.ScriptCode}"); } catch { }
+            try { Console.WriteLine($"        - Property: {d.PropertyName}"); } catch { }
+        } catch { }
+    }
+}private dynamic FindHmiSoftwareInSlots(dynamic item)
+{
+    // 1. Kiểm tra trực tiếp item này (có thể là chính nó)
+    try {
+        foreach (var container in item.GetSoftwareContainers()) {
+            if (container.Software != null) {
+                // Kiểm tra bằng tên kiểu để tránh lỗi Cast của V20
+                if (container.Software.GetType().FullName.Contains("HmiSoftware")) {
+                    Console.WriteLine($"      => [HIT] Đã tóm được HMI Software tại: {item.Name}");
+                    return container.Software;
+                }
+            }
+        }
+    } catch { }
+
+    // 2. Nếu là Rack (PC Station), phải lùng sục vào các Slots (DeviceItems con)
+    // Đây là nơi bạn đã gọi PlugNew trong hàm CreateDev
+    foreach (var subItem in item.DeviceItems) {
+        var found = FindHmiSoftwareInSlots(subItem);
+        if (found != null) return found;
+    }
+
+    return null;
+}
+
+
+
         #endregion
 
         #region Helpers
+
+        private object GetHmiSoftware()
+    {
+    if (_project == null) return null;
+
+    // Quét qua tất cả thiết bị trong Project
+    foreach (Device device in _project.Devices)
+    {
+        // Sử dụng hàm FindSoftwareRecursive có sẵn của Otis để tìm Software
+        var sw = FindSoftwareRecursive(device);
+        if (sw != null)
+        {
+            string typeName = sw.GetType().Name;
+            // Trong Unified, Software có thể là HmiSoftware hoặc HmiTarget
+            if (typeName.Contains("Hmi")) 
+            {
+                return sw;
+            }
+        }
+    }
+
+    // Nếu không tìm thấy ở Root, quét trong các Group (Thư mục)
+    foreach (DeviceUserGroup group in _project.DeviceGroups)
+    {
+        var sw = FindSoftwareInGroupRecursive(group);
+        if (sw != null) return sw;
+    }
+
+    return null;
+}
+
+        // Hàm phụ để quét phần mềm HMI trong các Folder
+        private object FindSoftwareInGroupRecursive(DeviceUserGroup group)
+        {
+            foreach (Device device in group.Devices)
+            {
+                var sw = FindSoftwareRecursive(device);
+                if (sw != null && sw.GetType().Name.Contains("Hmi")) return sw;
+            }
+            foreach (DeviceUserGroup subGroup in group.Groups)
+            {
+                var sw = FindSoftwareInGroupRecursive(subGroup);
+                if (sw != null) return sw;
+            }
+            return null;
+        }
 
         private dynamic GetHmiTarget(string deviceName)
         {
@@ -603,7 +1337,8 @@ namespace Middleware_console
             return AppDomain.CurrentDomain.GetAssemblies()
                 .SelectMany(a => a.GetTypes())
                 .FirstOrDefault(t => t.FullName != null && t.FullName.Equals(fullTypeName, StringComparison.OrdinalIgnoreCase));
-        }        private IEngineeringObject CreateItemGeneric(IEngineeringComposition container, string typeName, string name)
+        }        
+        private IEngineeringObject CreateItemGeneric(IEngineeringComposition container, string typeName, string name)
         {
             try
             {
@@ -1571,6 +2306,12 @@ namespace Middleware_console
 
                 // 4. Gán địa chỉ tuyệt đối (ví dụ %M1.0)
                 newTag.SetAttribute("Address", address);
+                // Kiểm tra nếu cột IsLogging là True thì gọi hàm kích hoạt Log
+                if (columns.Length >= 6 && columns[4].Trim().ToLower() == "true")
+                {
+                    string logName = columns[5].Trim();
+                    EnableLoggingForTag(hmiName, tagName, logName);
+                }
 
                 // 5. Gán Acquisition Cycle nếu có (Cột G)
                 if (columns.Length >= 7) {
@@ -1588,6 +2329,48 @@ namespace Middleware_console
         ConsoleUI.PrintResult($"[SUCCESS] Hoàn thành! Đã nạp {successCount}/{lines.Length - 1} tags vào {hmiName}.");
     }
     catch (Exception ex) { ConsoleUI.PrintResult($"[ERROR] Fatal: {ex.Message}"); }
+}
+
+public string EnableLoggingForTag(string hmiName, string tagName, string dataLogName)
+{
+    if (_project == null) return "[ERROR] Project chưa mở.";
+
+    try
+    {
+        Device hmiDevice = FindDeviceRecursive(_project, hmiName);
+        var software = GetSoftware(hmiDevice) as HmiSoftware;
+        
+        // 1. Tìm Tag cần Log trong Default tag table
+        var table = software.TagTables.Find("Default tag table");
+        var hmiTag = table.Tags.Find(tagName);
+        if (hmiTag == null) return $"[ERROR] Không tìm thấy Tag: {tagName}";
+
+        // 2. Truy cập danh sách LoggingTags của Tag đó
+        var loggingTags = hmiTag.LoggingTags;
+        
+        // 3. Tạo LoggingTag mới (thường đặt tên trùng với tên Tag hoặc tagName_Log)
+        string logTagName = tagName + "_Log";
+        var existingLog = loggingTags.Find(logTagName);
+        if (existingLog != null) existingLog.Delete();
+
+        var newLoggingTag = loggingTags.Create(logTagName);
+
+        // 4. Cấu hình các thuộc tính dựa trên API bạn gửi
+        // Gán vào bảng Data Log (Ví dụ: "Data_log_1")
+        newLoggingTag.SetAttribute("LogConfiguration", dataLogName); 
+        
+        // Chế độ ghi: 3 = OnChange (Ghi khi thay đổi)
+        newLoggingTag.SetAttribute("LoggingMode", 3); 
+
+        // Nếu muốn làm mượt dữ liệu (Smoothing)
+        newLoggingTag.SetAttribute("SmoothingMode", 0); // 0 = NoSmoothing
+
+        return $"[SUCCESS] Đã kích hoạt Data Log cho Tag '{tagName}' vào bảng '{dataLogName}'";
+    }
+    catch (Exception ex)
+    {
+        return $"[ERROR] Lỗi Logging: {ex.Message}";
+    }
 }
 #endregion
     }
@@ -1614,6 +2397,12 @@ namespace Middleware_console
         public Dictionary<string, string> Events { get; set; }
         public List<ScadaItemModel> Items { get; set; }
         public string TagName { get; set; }
+        public LibraryModel Library { get; set; }
+    }
+        public class LibraryModel
+    {
+        public string LibraryPath { get; set; }
+        public string SubLibrary { get; set; }
     }
     #endregion
 

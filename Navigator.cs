@@ -264,6 +264,8 @@ namespace Middleware_console
                             "14. Update WinCC Unified Runtime (COMING SOON)",
                             "15. Setup HMI-PLC Connection (Unified)",
                             "16. Create HMI Tag (WinCC Unified)",
+                            "17. Import Graphics to Project (WinCC Unified)",
+                            "18. Export Symbol Paths from Screen (New)"
                             
                         });
 
@@ -431,7 +433,9 @@ namespace Middleware_console
                     }
                     else if (procChoice.Contains("14."))
                     {
-                           HandleJsonDrawing();
+                        HandleJsonDrawing();
+                     
+                        
                     }
                     else if (procChoice.Contains("15."))
                     {
@@ -442,11 +446,33 @@ namespace Middleware_console
                     {
                            ImportTagsMenu();
                            
-                    }       
+                    }     
+                    else if (procChoice.Contains("17."))
+                    {
+                        HandleImportGraphics();
+                        // HandleExportSample();
+                           
+                    }   
+                    else if (procChoice.Contains("18.")) // Giả sử 18 là Export Paths
+{
+    Console.Clear();
+    Console.Write("Nhập tên màn hình cần quét: ");
+    string screen = Console.ReadLine();
+    
+    Console.Write("Nhập tên vật thể cụ thể (hoặc để trống nếu quét tất cả): ");
+    string target = Console.ReadLine() ?? ""; 
+
+    // Cập nhật dòng bị lỗi (Dòng 470): Thêm tham số thứ 3
+    _tiaEngine.ExportAllPathsFromScreen(_currentDeviceName, screen, target);
+    
+    Console.WriteLine("\nDone. Press any key...");
+    Console.ReadKey();
+}
                         break;
                 }
             }
         }
+        
 
         // --- LOGIC: CREATE DEVICE (JSON + MANUAL) ---
         static void HandleCreateDevice()
@@ -531,94 +557,338 @@ namespace Middleware_console
             Console.ReadKey();
         }
         private static async void HandleJsonDrawing()
+{
+    Console.Clear();
+    ConsoleUI.PrintHeader("WINCC UNIFIED JSON GENERATOR");
+
+    // 1. Kiểm tra kết nối
+    if (!_tiaEngine.IsConnected)
+    {
+        ConsoleUI.PrintError("Please connect to TIA instance first!");
+        Console.ReadKey();
+        return;
+    }
+
+    // 2. Chọn thiết bị HMI (PC-System_1)
+    var devices = _tiaEngine.GetPlcList();
+    string selectedDevice = ConsoleUI.SelectOption("Choose HMI Device:", devices.ToArray());
+    if (string.IsNullOrEmpty(selectedDevice)) return;
+
+    // 3. Chọn file JSON cấu hình SCADA
+    string filePath = SelectJsonFilePath(); 
+    if (string.IsNullOrEmpty(filePath)) return;
+
+    try
+    {
+        // BƯỚC 1: Đọc và giải mã JSON
+        string jsonContent = File.ReadAllText(filePath);
+        var screenData = JsonConvert.DeserializeObject<ScadaScreenModel>(jsonContent);
+
+        if (screenData == null || string.IsNullOrEmpty(screenData.ScreenName))
         {
-            Console.Clear();
-            ConsoleUI.PrintHeader("WINCC UNIFIED JSON GENERATOR");
+            ConsoleUI.PrintError("JSON invalid or missing ScreenName.");
+            return;
+        }
 
-            // 1. Kiểm tra kết nối
-            if (!_tiaEngine.IsConnected)
+        // BƯỚC 2: TẠO MÀN HÌNH MỚI (FIX LỖI NULL REFERENCE)
+        ConsoleUI.PrintStep($"Checking screen: {screenData.ScreenName}...");
+        _tiaEngine.CreateUnifiedScreen(selectedDevice, screenData.ScreenName); // Hàm này đảm bảo màn hình luôn tồn tại
+
+        // BƯỚC 3: Mapping tên ảnh thực tế (Phần code cũ của Otis giữ nguyên)
+        List<string> tiaGraphics = _tiaEngine.GetProjectGraphicsNames();
+        // ... (Logic Mapping Layer/Items của bạn giữ nguyên tại đây) ...
+        ValidateAndFixGraphics(screenData);
+
+        // BƯỚC 4: Ra lệnh vẽ (Bây giờ chắc chắn màn hình đã tồn tại)
+        ConsoleUI.PrintStep($"DRAWING TO WINCC UNIFIED...");
+        await Task.Run(() => { 
+            _tiaEngine.GenerateScadaScreenFromData(selectedDevice, screenData); 
+        });
+
+        ConsoleUI.PrintSuccess("Vẽ thành công!");
+    }
+    catch (Exception ex) { ConsoleUI.PrintError($"Lỗi: {ex.Message}"); }
+    
+    Console.WriteLine("\nPress any key to return...");
+    Console.ReadKey();
+}
+
+// Hàm phụ trợ chọn file để code trông gọn hơn
+private static string SelectJsonFilePath()
+{
+    string path = "";
+    Thread t = new Thread(() => {
+        Form dummy = new Form() { TopMost = true, Top = -10000 }; 
+        using (OpenFileDialog ofd = new OpenFileDialog()) {
+            ofd.Title = "Chọn file cấu hình SCADA JSON";
+            ofd.Filter = "JSON Files (*.json)|*.json";
+            if (ofd.ShowDialog(dummy) == DialogResult.OK) path = ofd.FileName;
+        }
+    });
+    t.SetApartmentState(ApartmentState.STA);
+    t.Start(); t.Join();
+    return path;
+}
+
+private static void ValidateAndFixGraphics(ScadaScreenModel screenData)
+{
+    ConsoleUI.PrintStep("Đang kiểm tra kho ảnh trong TIA Portal...");
+
+    try
+    {
+        // 1. Lấy danh sách ảnh hiện có trong TIA (Đảm bảo danh sách không null)
+        List<string> tiaGraphics = _tiaEngine.GetProjectGraphicsNames() ?? new List<string>();
+
+        // 2. Thu thập TẤT CẢ các Items từ TẤT CẢ các Layers (Sửa lỗi source null)
+        // Dùng SelectMany để làm phẳng cấu trúc Layers -> Items
+        var allItems = screenData.Layers?
+            .Where(l => l.Items != null)
+            .SelectMany(l => l.Items)
+            .ToList() ?? new List<ScadaItemModel>();
+
+        if (allItems.Count == 0)
+        {
+            Console.WriteLine("      [!] Cảnh báo: Không tìm thấy đối tượng nào trong file JSON.");
+            return;
+        }
+
+        // 3. Lấy danh sách các Type cần dùng (không trùng lặp, bỏ qua hình vẽ cơ bản)
+        var requiredTypes = allItems
+            .Select(i => i.Type)
+            .Distinct()
+            .Where(t => !string.IsNullOrEmpty(t) && 
+                        t != "Button" && 
+                        t != "Rectangle" && 
+                        t != "Gauge") 
+            .ToList();
+
+        foreach (var type in requiredTypes)
+        {
+            // Kiểm tra xem đã có ảnh nào trong TIA chứa từ khóa 'type' chưa
+            bool exists = tiaGraphics.Any(g => g.IndexOf(type, StringComparison.OrdinalIgnoreCase) >= 0);
+
+            if (!exists)
             {
-                ConsoleUI.PrintError("Please connect to TIA instance first!");
-                Console.WriteLine("Press any key to return...");
-                Console.ReadKey();
-                return;
-            }
+                ConsoleUI.PrintError($"Thiếu ảnh cho loại thiết bị: '{type}'");
+                Console.WriteLine($"      -> Vui lòng chọn file ảnh để nạp vào TIA cho '{type}'...");
 
-            // 2. Chọn HMI (Tự động lấy danh sách Unified)
-            Console.WriteLine("\n--- Step 1: Select Target Unified HMI ---");
-            var devices = _tiaEngine.GetPlcList();
-            
-            if (devices.Count == 0)
-            {
-                ConsoleUI.PrintError("No Unified HMI found in the project.");
-                return;
-            }
+                // 4. Mở hộp thoại chọn file (STA Thread)
+                string selectedFile = "";
+                Thread t = new Thread(() => {
+                    Form dummy = new Form() { TopMost = true, Top = -10000 };
+                    using (OpenFileDialog ofd = new OpenFileDialog()) {
+                        ofd.Title = $"Nạp ảnh cho {type}";
+                        ofd.Filter = "Image Files|*.png;*.jpg;*.jpeg;*.bmp";
+                        if (ofd.ShowDialog(dummy) == DialogResult.OK) selectedFile = ofd.FileName;
+                    }
+                });
+                t.SetApartmentState(ApartmentState.STA);
+                t.Start(); t.Join();
 
-            string selectedDevice = ConsoleUI.SelectOption("Choose HMI Device:", devices.ToArray());
-            if (string.IsNullOrEmpty(selectedDevice)) return;
-
-            Console.WriteLine($"\nSelected Device: {selectedDevice}");
-
-            // 3. Mở hộp thoại chọn file JSON
-            Console.WriteLine("\n--- Step 2: Select JSON File ---");
-            Console.WriteLine("Opening File Dialog... (Check Taskbar if hidden)");
-
-            string filePath = "";
-            
-            // STA Thread cho OpenFileDialog
-            Thread t = new Thread((ThreadStart)(() => {
-                Form dummy = new Form() { TopMost = true, Top = -10000 }; 
-                using (OpenFileDialog ofd = new OpenFileDialog())
+                if (!string.IsNullOrEmpty(selectedFile))
                 {
-                    ofd.Title = "Chọn file JSON cho WinCC Unified";
-                    ofd.Filter = "JSON Files (*.json)|*.json";
-                    ofd.RestoreDirectory = true;
-
-                    if (ofd.ShowDialog(dummy) == DialogResult.OK)
+                    // 5. Nạp trực tiếp vào Project Graphics
+                    // Dùng chính tên 'type' làm tên định danh trong TIA để khớp 100%
+                    bool success = _tiaEngine.ImportGraphic(type, selectedFile);
+                    if (success)
                     {
-                        filePath = ofd.FileName;
+                        ConsoleUI.PrintSuccess($"Đã nạp ảnh '{type}' vào TIA thành công.");
+                        tiaGraphics.Add(type); // Cập nhật danh sách tạm để không hỏi lại
                     }
                 }
-            }));
-            
-            t.SetApartmentState(ApartmentState.STA);
-            t.Start();
-            t.Join();
-
-            if (string.IsNullOrEmpty(filePath))
-            {
-                ConsoleUI.PrintError("No file selected.");
-                return;
+                else
+                {
+                    ConsoleUI.PrintResult($"Bạn chưa chọn ảnh cho '{type}'. Đối tượng này có thể bị trắng khi vẽ.");
+                }
             }
-
-            ConsoleUI.PrintSuccess($"Selected File: {Path.GetFileName(filePath)}");
-
-            // 4. Xử lý và Vẽ
-            try
-            {
-                Console.WriteLine("\nProcessing...");
-                string jsonContent = File.ReadAllText(filePath);
-                ScadaScreenModel screenData = JsonConvert.DeserializeObject<ScadaScreenModel>(jsonContent);
-
-                if (screenData == null) throw new Exception("File JSON không đúng định dạng (Data is null).");
-
-                ConsoleUI.PrintStep($"DRAWING TO WINCC UNIFIED '{selectedDevice}'...");
-
-                // GỌI ĐÚNG HÀM CỦA UNIFIED
-                await Task.Run(() => { 
-                    _tiaEngine.GenerateScadaScreenFromData(selectedDevice, screenData); 
-                });
-
-                ConsoleUI.PrintSuccess($"Đã tạo xong màn hình '{screenData.ScreenName}' cho WinCC Unified!");
-            }
-            catch (Exception ex)
-            {
-                ConsoleUI.PrintError($"Lỗi: {ex.Message}");
-            }
-
-            Console.WriteLine("\nPress any key to return...");
-            Console.ReadKey();
         }
+    }
+    catch (Exception ex)
+    {
+        ConsoleUI.PrintError($"Lỗi trong quá trình kiểm tra kho ảnh: {ex.Message}");
+    }
+}
+       private static void HandleImportGraphics()
+{
+    Console.Clear();
+    ConsoleUI.PrintHeader("IMPORT GRAPHIC TO WINCC UNIFIED");
+
+    // 1. Kiểm tra kết nối
+    if (!_tiaEngine.IsConnected)
+    {
+        ConsoleUI.PrintError("Please connect to TIA instance first!");
+        Console.WriteLine("Press any key to return...");
+        Console.ReadKey();
+        return;
+    }
+
+    // 2. Menu chọn chế độ
+    Console.WriteLine("Select Import Mode:");
+    Console.WriteLine("1. Import Single Image (Chọn 1 file)");
+    Console.WriteLine("2. Import Batch (Nạp toàn bộ ảnh trong 1 thư mục)");
+    Console.Write("\nYour choice: ");
+    string choice = Console.ReadLine();
+
+    if (choice == "1")
+    {
+        ImportSingleGraphic();
+    }
+    else if (choice == "2")
+    {
+        ImportBatchGraphics();
+    }
+    else
+    {
+        ConsoleUI.PrintError("Invalid choice.");
+    }
+
+    Console.WriteLine("\nPress any key to return...");
+    Console.ReadKey();
+}
+
+private static void ImportSingleGraphic()
+{
+    Console.WriteLine("\n--- Mode: Single Import ---");
+    string imagePath = "";
+    
+    Thread t = new Thread((ThreadStart)(() => {
+        Form dummy = new Form() { TopMost = true, Top = -10000 }; 
+        using (OpenFileDialog ofd = new OpenFileDialog()) {
+            ofd.Title = "Chọn file ảnh đơn lẻ";
+            ofd.Filter = "Image Files (*.svg;*.png;*.jpg)|*.svg;*.png;*.jpg";
+            if (ofd.ShowDialog(dummy) == DialogResult.OK) imagePath = ofd.FileName;
+        }
+    }));
+    t.SetApartmentState(ApartmentState.STA);
+    t.Start(); t.Join();
+
+    if (string.IsNullOrEmpty(imagePath)) return;
+
+    Console.Write("Enter name in TIA (Leave blank for file name): ");
+    string graphicName = Console.ReadLine();
+    if (string.IsNullOrEmpty(graphicName)) graphicName = Path.GetFileNameWithoutExtension(imagePath);
+
+    bool isSuccess = _tiaEngine.AddPngToProjectGraphics(imagePath, graphicName);
+    if (isSuccess) ConsoleUI.PrintSuccess($"Imported: {graphicName}");
+}
+private static void ImportBatchGraphics()
+{
+    Console.WriteLine("\n--- Mode: Batch Import ---");
+    string folderPath = "";
+
+    Thread t = new Thread((ThreadStart)(() => {
+        Form dummy = new Form() { TopMost = true, Top = -10000 };
+        using (FolderBrowserDialog fbd = new FolderBrowserDialog()) {
+            fbd.Description = "Chọn thư mục chứa kho ảnh PNG của bạn";
+            if (fbd.ShowDialog(dummy) == DialogResult.OK) folderPath = fbd.SelectedPath;
+        }
+    }));
+    t.SetApartmentState(ApartmentState.STA);
+    t.Start(); t.Join();
+
+    if (!string.IsNullOrEmpty(folderPath))
+    {
+        Console.WriteLine($"Scanning folder: {folderPath}...");
+        // Gọi hàm nạp hàng loạt đã viết trong Engine TIA_V20
+        _tiaEngine.ImportAllImagesFromFolder(folderPath);
+        ConsoleUI.PrintSuccess("Batch import process finished.");
+    }
+}
+
+private static void SyncJsonWithTiaGraphics(string jsonPath)
+{
+    Console.WriteLine("\n--- [SYNC] ĐỒNG BỘ JSON VỚI KHO ẢNH TIA PORTAL ---");
+
+    try
+    {
+        // 1. Lấy danh sách ảnh thực tế đang có trong Project Graphics của TIA
+        List<string> tiaGraphics = _tiaEngine.GetProjectGraphicsNames();
+
+        if (tiaGraphics == null || tiaGraphics.Count == 0)
+        {
+            Console.WriteLine("      [!] Cảnh báo: Kho ảnh trong TIA đang trống.");
+            return;
+        }
+
+        // 2. Đọc và giải mã file JSON
+        if (!File.Exists(jsonPath))
+        {
+            Console.WriteLine($"      [!] Lỗi: Không tìm thấy file JSON tại {jsonPath}");
+            return;
+        }
+
+        string jsonContent = File.ReadAllText(jsonPath);
+        // Lưu ý: Dùng ScadaScreenModel trực tiếp (bỏ TIA_V20. phía trước)
+        var scadaData = JsonConvert.DeserializeObject<ScadaScreenModel>(jsonContent);
+
+        if (scadaData == null || scadaData.Items == null) return;
+
+        bool isUpdated = false;
+        int matchCount = 0;
+
+        // 3. Thực hiện so khớp tên ảnh
+        foreach (var item in scadaData.Items)
+        {
+            // Tìm tấm ảnh trong TIA mà tên của nó xuất hiện trong Name hoặc Type của Item
+            // Sử dụng IndexOf để tương thích với mọi phiên bản .NET
+            string bestMatch = tiaGraphics.FirstOrDefault(g => 
+                (item.Name != null && item.Name.IndexOf(g, StringComparison.OrdinalIgnoreCase) >= 0) || 
+                (item.Type != null && item.Type.IndexOf(g, StringComparison.OrdinalIgnoreCase) >= 0));
+
+            if (!string.IsNullOrEmpty(bestMatch))
+            {
+                // Khởi tạo Properties nếu nó bị null trong JSON
+                if (item.Properties == null) item.Properties = new Dictionary<string, object>();
+
+                // Gán hoặc cập nhật tên ảnh thực tế vào thuộc tính GraphicName
+                item.Properties["GraphicName"] = bestMatch;
+                isUpdated = true;
+                matchCount++;
+                Console.WriteLine($"      [MATCH] '{item.Name}' -> Khớp với ảnh: '{bestMatch}'");
+            }
+            else
+            {
+                Console.WriteLine($"      [?] '{item.Name}': Không tìm thấy ảnh phù hợp trong TIA.");
+            }
+        }
+
+        // 4. Ghi đè lại file JSON nếu có sự thay đổi
+        if (isUpdated)
+        {
+            string output = JsonConvert.SerializeObject(scadaData, Formatting.Indented);
+            File.WriteAllText(jsonPath, output);
+            Console.WriteLine($"\n      [OK] Đã cập nhật {matchCount} đối tượng vào file JSON.");
+        }
+        else
+        {
+            Console.WriteLine("\n      [Info] Không có thay đổi nào cần cập nhật.");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"      [ERROR] Lỗi thực thi Sync: {ex.Message}");
+    }
+}
+// private static void HandleExportSample()
+// {
+//     Console.Clear();
+//     Console.WriteLine("--- Step 0: Exporting Sample Format from TIA ---");
+    
+//     // Định nghĩa nơi lưu file mẫu
+//     string exportPath = @"C:\Capstone Project\TIA_Graphic_Format.xml";
+
+//     // Gọi engine để thực hiện
+//     // Giả sử đối tượng TIA_V20 của bạn tên là _tiaEngine
+//     _tiaEngine.ExportGraphicSample(exportPath);
+
+//     Console.WriteLine("\n[HƯỚNG DẪN CHO OTIS]:");
+//     Console.WriteLine("1. Otis hãy mở file 'TIA_Graphic_Format.xml' bằng Notepad++ hoặc VS Code.");
+//     Console.WriteLine("2. Tìm thẻ <Document xmlns=\"...\"> để xem Namespace chuẩn.");
+//     Console.WriteLine("3. Tìm thẻ bao quanh ID=\"0\" để xem tên Class chuẩn của WinCC Unified.");
+//     Console.WriteLine("\nPress any key to return...");
+//     Console.ReadKey();
+// }
+
 
         // --- LOGIC: IMPORT SCL ---
         static void TiaImportLogic(string blockType)
