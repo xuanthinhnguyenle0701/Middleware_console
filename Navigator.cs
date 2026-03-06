@@ -261,7 +261,7 @@ namespace Middleware_console
                             "11. Stop PLC",
                             "12. CHECK CONNECTION (Test Online)",
                             "13. Update Firmware",
-                            "14. Update WinCC Unified Runtime (COMING SOON)",
+                            "14. Generate SCADA from JSON",
                             "15. Setup HMI-PLC Connection (Unified)",
                             "16. Create HMI Tag (WinCC Unified)",
                             "17. Import Graphics to Project (WinCC Unified)",
