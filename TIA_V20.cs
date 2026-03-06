@@ -2387,6 +2387,71 @@ public string EnableLoggingForTag(string hmiName, string tagName, string dataLog
         return $"[ERROR] Lỗi Logging: {ex.Message}";
     }
 }
+
+public void ImportPlcTagsFromCsv(string plcName, string csvPath)
+{
+    if (_project == null) { ConsoleUI.PrintResult("[ERROR] Project chưa mở."); return; }
+
+    try
+    {
+        if (!System.IO.File.Exists(csvPath)) {
+            ConsoleUI.PrintResult($"[ERROR] Không tìm thấy file: {csvPath}"); return;
+        }
+
+        Device plcDevice = FindDeviceRecursive(_project, plcName);
+        var software = GetSoftware(plcDevice) as PlcSoftware;
+        if (software == null) return;
+
+        string[] lines = System.IO.File.ReadAllLines(csvPath);
+        int successCount = 0;
+
+        for (int i = 1; i < lines.Length; i++)
+        {
+            // Tách cột bằng dấu phẩy hoặc dấu chấm phẩy
+            string[] columns = lines[i].Split(','); 
+            if (columns.Length < 4) columns = lines[i].Split(';'); 
+
+            if (columns.Length < 4) continue;
+
+            // --- CẬP NHẬT THEO HÌNH ẢNH EXCEL ---
+            string tagName = columns[0].Trim();         // Cột A: Name
+            string tablePath = columns[1].Trim();      // Cột B: Path (Tag Table)
+            string dataType = columns[2].Trim();       // Cột C: Data Type
+            string address = columns[3].Trim();        // Cột D: Logical Address
+            string comment = columns.Length > 4 ? columns[4].Trim() : ""; // Cột E: Comment
+
+            try 
+            {
+                // Tìm hoặc tạo Tag Table dựa theo cột B
+                var table = software.TagTableGroup.TagTables.Find(tablePath) 
+                            ?? software.TagTableGroup.TagTables.Create(tablePath);
+
+                var plcTags = table.Tags;
+                if (plcTags.Find(tagName) != null) plcTags.Find(tagName).Delete();
+                
+                var newTag = plcTags.Create(tagName);
+
+                // Gán thuộc tính theo đúng Openness API cho PLC
+                newTag.SetAttribute("DataTypeName", dataType); 
+                newTag.SetAttribute("LogicalAddress", address);
+
+                if (!string.IsNullOrEmpty(comment))
+                {
+                    newTag.Comment.Items.First().Text = comment;
+                }
+
+                successCount++;
+                Console.WriteLine($"[INFO] Line {i+1}: Đã nạp {tagName} vào bảng {tablePath}");
+            }
+            catch (Exception ex)
+            {
+                ConsoleUI.PrintResult($"[ERROR] Dòng {i + 1} ({tagName}): {ex.Message}");
+            }
+        }
+        ConsoleUI.PrintResult($"[SUCCESS] Hoàn thành! Đã nạp {successCount} tags vào PLC {plcName}.");
+    }
+    catch (Exception ex) { ConsoleUI.PrintResult($"[ERROR] Fatal: {ex.Message}"); }
+}
 #endregion
     }
     

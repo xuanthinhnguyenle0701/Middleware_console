@@ -265,7 +265,8 @@ namespace Middleware_console
                             "15. Setup HMI-PLC Connection (Unified)",
                             "16. Create HMI Tag (WinCC Unified)",
                             "17. Import Graphics to Project (WinCC Unified)",
-                            "18. Export Symbol Paths from Screen (New)"
+                            "18. Import PLC Tags from CSV",
+                            "19. Export Symbol Paths from Screen (New)"
                             
                         });
 
@@ -452,8 +453,10 @@ namespace Middleware_console
                         HandleImportGraphics();
                         // HandleExportSample();
                            
-                    }   
-                    else if (procChoice.Contains("18.")) // Giả sử 18 là Export Paths
+                    }
+                     else if (procChoice.Contains("18."))
+                        ImportPlcTagsMenu();   
+                    else if (procChoice.Contains("19.")) // Giả sử 18 là Export Paths
 {
     Console.Clear();
     Console.Write("Nhập tên màn hình cần quét: ");
@@ -972,6 +975,38 @@ private static void SyncJsonWithTiaGraphics(string jsonPath)
     Console.ReadKey();
 }
 
+private static void ImportPlcTagsMenu()
+{
+    Console.WriteLine("\n--- NẠP PLC TAGS TỪ FILE CSV (CHỌN FILE) ---");
+    // Đổi thông báo để người dùng nhập tên PLC (VD: PLC_1)
+    Console.Write("Nhập tên PLC (ví dụ: PLC_1): ");
+    string plcName = Console.ReadLine();
+
+    // Khởi tạo luồng chạy Dialog (STA là bắt buộc đối với WinForms Dialog)
+    Thread t = new Thread(() => {
+        using (OpenFileDialog openFileDialog = new OpenFileDialog())
+        {
+            openFileDialog.Title = "Chọn file danh sách PLC Tags";
+            openFileDialog.Filter = "CSV files (*.csv)|*.csv";
+            
+            // Cửa sổ sẽ hiện lên để chọn file
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                string filePath = openFileDialog.FileName;
+                
+                // Gọi hàm nạp Tag cho PLC thay vì HMI
+                _tiaEngine.ImportPlcTagsFromCsv(plcName, filePath);
+            }
+        }
+    });
+
+    t.SetApartmentState(ApartmentState.STA); 
+    t.Start();
+    t.Join(); // Chờ xử lý xong mới quay lại menu chính
+
+    Console.WriteLine("\nNhấn phím bất kỳ để quay lại...");
+    Console.ReadKey();
+}
 
 
         // --- AI LOGIC (GIỮ NGUYÊN) ---
