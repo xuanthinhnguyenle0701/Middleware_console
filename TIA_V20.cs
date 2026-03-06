@@ -527,27 +527,21 @@ foreach (var item in items) {
             Console.WriteLine($"      [POS OK] {item.Name} -> ({item.Properties["Left"]}, {item.Properties["Top"]})");
         } catch { }
 
-        // B. GÁN CHỮ CHO NÚT BẤM (Sửa lỗi CS0103)    
+        // B. GÁN CHỮ CHO NÚT BẤM (Sửa lỗi CS0103)   
         
-        if (item.Type.Contains("Button") && item.Properties.ContainsKey("Text")) 
-        {
-            string rawContent = item.Properties["Text"].ToString();
-            // Bắt buộc phải bọc trong thẻ HTML theo đúng bản siêu âm đã soi thấy
-            string formattedContent = $"<body><p>{rawContent}</p></body>"; 
-            
-            try 
-            {
-                // Truy cập sâu vào đúng phần tử Items[0]
-                dynamic textItem = newItem.Text.Items[0];
-                
-                // Sử dụng SetAttribute để nạp chuỗi đã format
-                textItem.SetAttribute("Text", formattedContent);
-                
-                Console.WriteLine($"      [TEXT OK] {item.Name} -> {rawContent}");
-            } 
-            catch (Exception ex) 
-            {
-                Console.WriteLine($"      [!] Lỗi định dạng Text cho {item.Name}: {ex.Message}");
+        if (item.Type.Contains("Button")) {
+            // A. PHẦN VỎ: Gán Text theo định dạng HTML (Đã dứt điểm lỗi Invalid Format)
+            if (item.Properties.ContainsKey("Text")) {
+                string formattedContent = $"<body><p>{item.Properties["Text"]}</p></body>";
+                try {
+                    newItem.Text.Items[0].SetAttribute("Text", formattedContent);
+                    Console.WriteLine($"      [TEXT OK] {item.Name} -> {item.Properties["Text"]}");
+                } catch { }
+            }
+
+            // B. PHẦN LINH HỒN: Gán Script từ JSON
+            if (item.Properties.ContainsKey("Scripts")) {
+                ProcessButtonScripts(newItem, item.Name, item.Properties["Scripts"]);
             }
         }
         createdObjects.Add(item.Name, newItem);
@@ -580,7 +574,7 @@ foreach (var item in items) {
 
         // 1. NHÓM NÚT BẤM (Đã OK)
         if (item.Type.Contains("Button")) {
-            ProcessButtonScripts(dynItem, item.Name, tag);
+           // ProcessButtonScripts(dynItem, item.Name, tag);
         }
         // 2. NHÓM CẢM BIẾN (Đã OK)
         else if (item.Type.Contains("Rectangle")) {
@@ -674,23 +668,44 @@ public void BindTagToBasic(dynamic item, string tagName, string propName) {
     } catch { }
 }
 
-private void ProcessButtonScripts(dynamic dynItem, string itemName, string tag) {
-    Type enumType = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => a.GetTypes()).FirstOrDefault(t => t.Name == "HmiButtonEventType");
+private void ProcessButtonScripts(dynamic dynItem, string itemName, dynamic scriptsJson) {
+    // Kiểm tra null để tránh crash
+    if (scriptsJson == null) return;
+
+    Type enumType = AppDomain.CurrentDomain.GetAssemblies()
+        .SelectMany(a => a.GetTypes())
+        .FirstOrDefault(t => t.Name == "HmiButtonEventType");
+    
     if (enumType == null) return;
 
-    foreach (var evName in new[] { "KeyDown", "KeyUp" }) {
-        var evEnum = Enum.Parse(enumType, evName);
-        dynamic handler = null;
-        foreach (dynamic h in dynItem.EventHandlers) if (h.EventType.ToString() == evName) { handler = h; break; }
+    // QUAN TRỌNG: Duyệt qua các thuộc tính của đối tượng JSON
+    foreach (var scriptEntry in scriptsJson) {
+        try {
+            // Nếu dùng Newtonsoft.Json, scriptEntry sẽ có Name và Value
+            string evName = scriptEntry.Name; 
+            string jsCode = scriptEntry.Value.ToString();
 
-        if (handler == null) {
-            var method = dynItem.EventHandlers.GetType().GetMethod("Create", new Type[] { enumType });
-            handler = method.Invoke(dynItem.EventHandlers, new object[] { evEnum });
+            var evEnum = Enum.Parse(enumType, evName);
+            dynamic handler = null;
+
+            // Tìm hoặc tạo Handler
+            foreach (dynamic h in dynItem.EventHandlers) {
+                if (h.EventType.ToString() == evName) { handler = h; break; }
+            }
+
+            if (handler == null) {
+                var method = dynItem.EventHandlers.GetType().GetMethod("Create", new Type[] { enumType });
+                handler = method.Invoke(dynItem.EventHandlers, new object[] { evEnum });
+            }
+
+            if (handler != null && handler.Script != null) {
+                handler.Script.ScriptCode = jsCode;
+                Console.WriteLine($"      [SCRIPT OK] {itemName} {evName} -> Code Loaded");
+            }
+        } catch (Exception ex) {
+            // Log này sẽ báo cho Otis biết nếu evName không khớp với Enum KeyDown/KeyUp
+            Console.WriteLine($"      [!] Bỏ qua Script không hợp lệ: {ex.Message}");
         }
-        int val = (evName == "KeyDown") ? 1 : 0;
-        // NẠP VÀO ScriptCode (Đã siêu âm thấy cổng này!)
-        handler.Script.ScriptCode = $"Tags(\"{tag}\").Write({val});";
-        Console.WriteLine($"      => [THẬT] {itemName} {evName} -> {tag}");
     }
 }
 
