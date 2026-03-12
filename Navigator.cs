@@ -44,8 +44,7 @@ namespace Middleware_console
     {
         // Khởi tạo các Engine
         private static GeminiCore _aiCore = new GeminiCore();
-        private static TIA_V20 _tiaEngine = new TIA_V20();
-        private static SatEngine _satEngine = new SatEngine();
+        private static TIA_V20 _tiaEngine = new TIA_V20();    
    
 
         // Biến lưu trạng thái hiển thị (Status Labeling)
@@ -253,32 +252,31 @@ namespace Middleware_console
                             "3. Choose Device",
                             "4. Create FB (Import SCL)",
                             "5. Create FC",
-                            "6. Create Faceplate",
-                            "7. Compile",
-                            "8. Download to device",
-                            "9. Save Project",
-                            "10. Run PLC",
-                            "11. Stop PLC",
-                            "12. CHECK CONNECTION (Test Online)",
-                            "13. Update Firmware",
+                            "6. Create OB",
+                            "7. Import PLC Tags from CSV",
+                            "8. Compile",
+                            "9. Download to device",
+                            "10. Save Project",
+                            "11. Run PLC",
+                            "12. Stop PLC",
+                            "13. CHECK CONNECTION (Test Online)",                           
                             "14. Generate SCADA from JSON",
                             "15. Setup HMI-PLC Connection (Unified)",
                             "16. Create HMI Tag (WinCC Unified)",
-                            "17. Import Graphics to Project (WinCC Unified)",
-                            "18. Import PLC Tags from CSV",
-                            "19. Export Symbol Paths from Screen (New)"
+                            "17. Import Graphics to Project (WinCC Unified)",                           
+                            "18. Export Symbol Paths from Screen (New)"
                             
                         });
 
-                        if (procChoice.Contains("1. Back"))
+                        if (procChoice.StartsWith("1. Back"))
                         {
                             currentState = AppState.TIA_Menu;
                         }
-                        else if (procChoice.Contains("2. Create Device"))
+                        else if (procChoice.StartsWith("2. Create Device"))
                         {
                             HandleCreateDevice();
                         }
-                        else if (procChoice.Contains("3. Choose Device"))
+                        else if (procChoice.StartsWith("3. Choose Device"))
                         {
                             var devices = _tiaEngine.GetPlcList();
                             if (devices.Count == 0) ConsoleUI.PrintError("No devices found in project.");
@@ -308,20 +306,23 @@ namespace Middleware_console
                                 }
                             }
                         }
-                        else if (procChoice.Contains("4. Create FB"))
+                        else if (procChoice.StartsWith("4. Create FB"))
                         {
                             TiaImportLogic("FB");
                         }
-                        else if (procChoice.Contains("5. Create FC"))
+                        else if (procChoice.StartsWith("5. Create FC"))
                         {
                             TiaImportLogic("FC");
                         }
-                        else if (procChoice.Contains("6. Create Faceplate"))
+                        else if (procChoice.StartsWith("6. Create OB"))
                         {
-                            ConsoleUI.PrintStep("Faceplate feature coming soon...");
-                            Thread.Sleep(1000);
+                            TiaImportLogic("OB");
+                        } 
+                        else if (procChoice.StartsWith("7."))
+                        {
+                            ImportPlcTagsMenu();   
                         }
-                        else if (procChoice.Contains("7. Compile"))
+                        else if (procChoice.StartsWith("8. Compile"))
                         {
                             string compileType = ConsoleUI.SelectOption("Compile Mode:", new[] { "Hardware", "Software", "Both" });
                             bool hw = compileType == "Hardware" || compileType == "Both";
@@ -333,7 +334,7 @@ namespace Middleware_console
                             Console.WriteLine("\nPress any key to return to menu...");
                             Console.ReadKey();
                         }
-                        else if (procChoice.Contains("8. Download"))
+                        else if (procChoice.StartsWith("9. Download"))
                         {
                             var adapters = TIA_V20.GetSystemNetworkAdapters();
                             if (adapters.Count == 0) ConsoleUI.PrintError("No Network Interface found.");
@@ -348,7 +349,7 @@ namespace Middleware_console
                             Console.WriteLine("\nPress any key to return to menu...");
                             Console.ReadKey();
                         }
-                        else if (procChoice.Contains("9. Save"))
+                        else if (procChoice.StartsWith("10. Save"))
                         {
                             if (_tiaEngine.SaveProject()) ConsoleUI.PrintSuccess("Project Saved.");
                             else ConsoleUI.PrintError("Save failed.");
@@ -357,7 +358,7 @@ namespace Middleware_console
                             Console.ReadKey();
                         }
                         
-                    else if (procChoice.Contains("10.")) // MENU: 10. RUN PLC
+                    else if (procChoice.StartsWith("11.")) // MENU: 11. RUN PLC
                     {
                         Console.WriteLine("\n--- MANUAL START PLC (Via Download) ---");
                         var adapters = TIA_V20.GetSystemNetworkAdapters();
@@ -373,7 +374,7 @@ namespace Middleware_console
                         Console.WriteLine("Press any key to continue...");
                         Console.ReadKey();
                     }
-                    else if (procChoice.Contains("11.")) // MENU: 11. STOP PLC
+                    else if (procChoice.StartsWith("12.")) // MENU: 12. STOP PLC
                     {
                         Console.WriteLine("\n--- MANUAL STOP PLC (Via Download) ---");
                         var adapters = TIA_V20.GetSystemNetworkAdapters();
@@ -388,7 +389,7 @@ namespace Middleware_console
                         Console.WriteLine("Press any key to continue...");
                         Console.ReadKey();
                     }
-                    else if (procChoice.Contains("12.")) // MENU: 12. CHECK CONNECTION
+                    else if (procChoice.StartsWith("13.")) // MENU: 13. CHECK CONNECTION
                     {
                         Console.WriteLine("\n--- CHECK PLC CONNECTION ---");
                         var adapters = TIA_V20.GetSystemNetworkAdapters();
@@ -401,62 +402,29 @@ namespace Middleware_console
                         
                         Console.WriteLine("Press any key to continue...");
                         Console.ReadKey();
-                    }
-                    else if (procChoice.Contains("13.")) // MENU: 11. FIRMWARE UPDATE
-                    {
-                        Console.WriteLine("\n--- PLC FIRMWARE UPDATE (NATIVE) ---");
-                        Console.WriteLine("WARNING: PLC will STOP during this process.");
-
-                        // 1. Chọn Card mạng (Mượn hàm của TIA cho nhanh)
-                        var adapters = TIA_V20.GetSystemNetworkAdapters();
-                        string netCard = ConsoleUI.SelectOption("Select Network Adapter:", adapters.ToArray());
-
-                        // 2. Xác nhận an toàn
-                        Console.WriteLine();
-                        Console.BackgroundColor = ConsoleColor.DarkRed;
-                        Console.ForegroundColor = ConsoleColor.White;
-                        Console.WriteLine($" ARE YOU SURE YOU WANT TO UPDATE FW FOR IP: {_currentIp}? ");
-                        Console.ResetColor();
-                        Console.Write("Type 'YES' to continue: ");
-                        
-                        if (Console.ReadLine() == "YES")
-                        {
-                            // 3. Gọi SatEngine (Bản Dynamic)
-                            _satEngine.ExecuteFirmwareUpdate(_currentIp, netCard);
-                        }
-                        else
-                        {
-                            Console.WriteLine("Operation Cancelled.");
-                        }
-
-                        Console.WriteLine("\nPress any key to continue...");
-                        Console.ReadKey();
-                    }
-                    else if (procChoice.Contains("14."))
+                    }                    
+                    else if (procChoice.StartsWith("14."))
                     {
                         HandleJsonDrawing();
                      
                         
                     }
-                    else if (procChoice.Contains("15."))
+                    else if (procChoice.StartsWith("15."))
                     {
                            SetupHmiConnection();
                            
                     }    
-                    else if (procChoice.Contains("16."))
+                    else if (procChoice.StartsWith("16."))
                     {
                            ImportTagsMenu();
                            
                     }     
-                    else if (procChoice.Contains("17."))
+                    else if (procChoice.StartsWith("17. Import Graphics"))
                     {
-                        HandleImportGraphics();
-                        // HandleExportSample();
+                        HandleImportGraphics();                       
                            
-                    }
-                     else if (procChoice.Contains("18."))
-                        ImportPlcTagsMenu();   
-                    else if (procChoice.Contains("19.")) // Giả sử 18 là Export Paths
+                    }                     
+                    else if (procChoice.StartsWith("18.")) // Giả sử 18 là Export Paths
 {
     Console.Clear();
     Console.Write("Nhập tên màn hình cần quét: ");
@@ -899,12 +867,14 @@ private static void SyncJsonWithTiaGraphics(string jsonPath)
             Console.WriteLine($"--- CREATE {blockType} ---");
             string path = "";
             
+            // 1. Kiểm tra file AI vừa tạo
             if (!string.IsNullOrEmpty(_lastGeneratedFilePath))
             {
                 string choice = ConsoleUI.SelectOption($"Use recently generated AI file ({Path.GetFileName(_lastGeneratedFilePath)})?", new[]{"Yes", "No"});
                 if (choice == "Yes") path = _lastGeneratedFilePath;
             }
 
+            // 2. Nếu không dùng file AI, yêu cầu nhập đường dẫn
             if (string.IsNullOrEmpty(path))
             {
                 Console.Write("Enter path to .scl file: ");
@@ -915,13 +885,26 @@ private static void SyncJsonWithTiaGraphics(string jsonPath)
             {
                 try
                 {
-                    _tiaEngine.CreateFBblockFromSource(path);
-                    ConsoleUI.PrintSuccess($"Imported {blockType} successfully!");
+                    // BƯỚC SỬA QUAN TRỌNG:
+                    // Ưu tiên lấy biến '_currentDeviceName' (biến lưu PLC bạn đã chọn ở Menu)
+                    // Nếu chưa chọn thì mới dùng PLC đầu tiên trong danh sách.
+                    string targetPlc = !string.IsNullOrEmpty(_currentDeviceName) ? 
+                                    _currentDeviceName : 
+                                    _tiaEngine.GetPlcList().FirstOrDefault();
+
+                    if (string.IsNullOrEmpty(targetPlc)) {
+                        ConsoleUI.PrintError("No PLC found in the current project!");
+                    }
+                    else {
+                        _tiaEngine.CreateFBblockFromSource(targetPlc, path); 
+                        ConsoleUI.PrintSuccess($"Imported {blockType} successfully into {targetPlc}!");
+                    }
                 }
                 catch (Exception ex) { ConsoleUI.PrintError(ex.Message); }
             }
             else ConsoleUI.PrintError("File not found.");
             
+            Console.WriteLine("\nPress any key to return...");
             Console.ReadKey();
         }
         // Giả sử đây là một phần trong Navigator.cs của bạn
